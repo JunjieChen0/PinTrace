@@ -448,6 +448,7 @@ def main():
                          "Only transport/data-source boundaries are mocked. Selection and rewriting use official code.",
                          "Dependabot missing-ecosystem routing is a fixture gate, not a replay of GitHub's private scheduler.",
                          "Absent local Renovate configuration does not prove that global/inherited automation was absent."]}
+    (root / "reports").mkdir(parents=True, exist_ok=True)
     (root / "reports/tool_replay_results.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({"tools": {name: record["completed"] for name, record in report["tools"].items()},
                       "checks_passed": not checks, "check_failures": checks}))
