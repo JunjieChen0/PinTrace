@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pintrace"
+version = "0.1.0"
+description = "Historical GitHub Actions SHA-pinning feasibility study"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.31,<3", "PyYAML>=6,<7", "json5>=0.9,<1", "ijson>=3.4,<4"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+audit = ["pyarrow"]
+
+[tool.setuptools.packages.find]
+include = ["pintrace*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

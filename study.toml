@@ -1,0 +1,11 @@
+[study]
+title = "From Incident Response to Sustained Maintenance"
+target_action = "tj-actions/changed-files"
+window_start = "2024-09-14T00:00:00Z"
+event_anchor = "2025-03-14T00:00:00Z"
+window_end = "2026-03-14T23:59:59Z"
+time_basis = "UTC committer timestamp on observable first-parent ancestry"
+pilot_size = 50
+sampling_seed = "pintrace-pilot-20250314-v1"
+dataset_record = "17301952"
+

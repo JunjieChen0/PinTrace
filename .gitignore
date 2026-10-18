@@ -1,0 +1,8 @@
+/paper/
+/data/
+/docs/
+/reports/
+/.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
