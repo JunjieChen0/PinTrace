@@ -14,7 +14,7 @@ from .measurement import BATCH_DIRECTORY, RULES_VERSION as MEASUREMENT_RULES_VER
 from .opportunity_join import RISKSET_RULES_VERSION, RULES_VERSION as EVIDENCE_DIRECTORY
 from .opportunity_join import _opportunity as normalize_opportunity
 
-RULES_VERSION = "tables-v4"
+RULES_VERSION = "tables-v5"
 
 FIELDS = {
     "repositories": ["repository_id", "candidate_name", "canonical_repository", "status", "baseline_commit", "baseline_tree", "payload"],

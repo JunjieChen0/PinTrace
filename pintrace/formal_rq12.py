@@ -24,7 +24,7 @@ import json
 import math
 from pathlib import Path
 
-from .formal_common import add_quantile, add_ratio, require_context, sha256, write_json
+from .formal_common import add_quantile, add_ratio, bound_measurements, expected_counts, require_context, sha256, write_json
 from .measurement_io import sections
 
 RULE_VERSION = "formal-rq12-v2"
@@ -509,7 +509,7 @@ def run(root, output_dir, context):
     root, output_dir = Path(root).resolve(), Path(output_dir).resolve()
     require_context(root, context, inputs=("study.toml", "reports/risksets.csv"))
     output_dir.mkdir(parents=True, exist_ok=True)
-    files = {Path(path).stem: path for path in context["freeze_manifest"]["input_sha256"] if path.startswith("data/derived/measurement-v3/") and Path(path).stem.isdigit()}
+    files = bound_measurements(context)
     if set(files) != set(context["raw_ids"]):
         raise ValueError("Frozen physical repository input set differs")
     records = []
@@ -559,8 +559,9 @@ def run(root, output_dir, context):
     for number in (1, 2):
         name, section = f"rq{number}_summary", f"rq{number}"
         report = dict(rule_version=RULE_VERSION, formal=summaries["formal"][section], raw=summaries["raw"][section], outputs=outputs,
-                      checks=dict(raw457=len(context["raw_ids"]) == 457, formal455=len(context["formal_ids"]) == 455,
-                                  formal_target_born_lineages_identified=len(excluded) == 65, target_born_primary_rows=contamination == 0),
+                      checks=dict(raw_population=len(context["raw_ids"]) == expected_counts(context)["raw"],
+                                  formal_population=len(context["formal_ids"]) == expected_counts(context)["formal"],
+                                  formal_target_born_lineages_identified=len(excluded) == expected_counts(context)["born_fixed"], target_born_primary_rows=contamination == 0),
                       freeze_sha256=context["guard"]["freeze_sha256"], input_authority="Full frozen-input guard before and after the coordinated batch",
                       implementation_sha256=sha256(Path(__file__)))
         report["checks"]["formal_and_raw_partitions"] = all(all(summaries[pop]["rq1"]["checks"].values()) for pop in ("formal", "raw"))

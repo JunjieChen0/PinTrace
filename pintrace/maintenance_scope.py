@@ -68,8 +68,8 @@ def export_scope(root):
     summary_path = root / summary_name
     summary_bytes = summary_path.read_bytes()
     join = json.loads(summary_bytes)
-    if join.get("rule_version") != "opportunity-join-v4" or join.get("inputs_unchanged") is not True:
-        raise ValueError("Maintenance view requires a verified opportunity-join-v4 input")
+    if join.get("rule_version") != "opportunity-join-v5" or join.get("inputs_unchanged") is not True:
+        raise ValueError("Maintenance view requires a verified opportunity-join-v5 input")
     detail = join["details"]["opportunity_matches"]
     hashes = dict(join["input_sha256"])
     if detail["path"] in hashes and hashes[detail["path"]] != detail["sha256"]:

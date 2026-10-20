@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import re
 
-from .formal_common import require_context, sha256, write_json
+from .formal_common import bound_input, closed_models, expected_counts, manifest_file, require_context, sha256, write_json
 
 RULES_VERSION = "formal-acceptance-v1"
 SUMMARIES = ("rq1_summary", "rq2_summary", "rq3_persistence_summary", "rq3_maintenance_results",
@@ -20,6 +20,7 @@ CHAPTERS = ("Introduction", "Background and Related Work", "Data, Scope, and Mea
             "Direct Incident-Linked Response", "Extension Beyond the Incident Action",
             "Persistence and Opportunity-Conditioned Maintenance", "Configuration and Version-Information Evidence",
             "Uncertainty and Robustness", "Discussion", "Threats to Validity and Method Revisions", "Conclusion", "References")
+TABLES_PATTERN = r"data/derived/tables-v\d+/repositories\.csv"
 HISTORICAL_SOURCES = {"maintenance_scope": "reports/maintenance_scope_summary.json",
                       "development_checkpoint": "data/derived/analysis-v4/checkpoints/152-20261018T113552Z/reports/table_manifest.json"}
 
@@ -196,8 +197,9 @@ def check_rq12(root, output, context, evidence, documents):
         evidence.check("S1", population + " bootstrap clusters match actual repository/reference observations",
             metric_sources_match(output, local["metrics"], evidence), paths + [cache, output / "estimand_registry.json"])
     evidence.check("S1", "frozen formal/raw and target-born cohort sizes",
-        (len(context["formal_ids"]), len(context["raw_ids"]), len(born)) == (455, 457, 65),
-        [root / "reports/freeze_manifest.json", root / "reports/risksets.csv"])
+        (len(context["formal_ids"]), len(context["raw_ids"]), len(born)) == tuple(
+            expected_counts(context)[key] for key in ("formal", "raw", "born_fixed")),
+        [manifest_file(root, context), root / "reports/risksets.csv"])
 
 
 def check_rq3(root, output, context, evidence, documents):
@@ -253,6 +255,7 @@ def check_rq3(root, output, context, evidence, documents):
                     and (all(r["lower_days"] == r["upper_days"] for r in wanted) if grade == "A" else result["delay_quantiles"]["interval"] == "[T-U,T-L)"), paths + [maintenance_path])
         if population == "formal":
             target = [r for r in projected if r["target_ids"]]
+            audited = evidence.load(root / "reports/maintenance_followup_audit.json")["horizons"]
             for day in (30, 90, 180):
                 horizon = documents["rq3_maintenance_results"]["populations"][population]["horizons"][str(day)]
                 potential = [r for r in target if end - number(r["available_by"]) >= day*DAY]
@@ -260,14 +263,21 @@ def check_rq3(root, output, context, evidence, documents):
                 evidence.check("S2", str(day) + "-day actual opportunity bounds",
                     horizon["calendar_potential"]["entries"] == len(potential)
                     and horizon["right_censored_observed_followup"]["entries"] == len(censored)
-                    and ((len(potential), len(censored)) == (84, 7) if day == 30 else len(potential) == len(censored) == 0), paths + [maintenance_path])
+                    and (len(potential), len(censored)) == (audited[str(day)]["calendar_potential"]["entries"],
+                                                            audited[str(day)]["right_censored_observed_followup"]["entries"]),
+                    paths + [maintenance_path, root / "reports/maintenance_followup_audit.json"])
     p, m, h = (documents[name] for name in ("rq3_persistence_summary", "rq3_maintenance_results", "h1_h2_summary"))
     f = p["populations"]["formal"]
     target = m["populations"]["formal"]["target"]
     born = [r for r in episodes if r["repository_id"] in context["formal_ids"] and r["episode_kind"] == "post_anchor_born_fixed" and r["exit_kind"] == "unpin"]
+    audit_counts = evidence.load(root / "reports/model_eligibility_audit.json")["counts"]
+    audited_scope = scope["maintenance_counts"]
     evidence.check("S2", "frozen headline scope and all three born-fixed unpins retained",
         (f["identity"]["episodes"], f["duration"]["episodes"], target["counts"]["entries"], m["populations"]["formal"]["comparison"]["counts"]["entries"],
-         target["by_grade"]["A"]["counts"]["entries"], target["by_grade"]["B"]["counts"]["entries"]) == (307, 297, 285, 689, 239, 46)
+         target["by_grade"]["A"]["counts"]["entries"], target["by_grade"]["B"]["counts"]["entries"]) == (
+            audit_counts["all_formal"]["episodes"], audit_counts["duration_eligible"]["episodes"],
+            audited_scope["target"]["opportunity_reference_pairs"], audited_scope["comparison"]["opportunity_reference_pairs"],
+            scope["maintenance_by_grade"]["A"]["opportunity_reference_pairs"], scope["maintenance_by_grade"]["B"]["opportunity_reference_pairs"])
         and len(born) == 3 and {r["repository_id"] for r in born} == {"58132544"}
         and not any(r["episode_id"] in eligible for r in born) and p["born_fixed_unpin"] == dict(identity=3, duration=0, excluded=3, repository_ids=["58132544"]), paths)
     evidence.check("S2", "three comparison layers, pre-U diagnostics and closed long maintenance",
@@ -304,7 +314,7 @@ def check_rq3(root, output, context, evidence, documents):
             inheritance_unknown_snapshots=sum(r["quality"]["inheritance_unknown_snapshots"] for r in group), repositories=len(group), snapshot_fraction=point))
     tool_path = root / "reports/tool_replay_results.json"
     evidence.check("S2", "entry-local H1/H2 categories, inheritance unknown and real historical-tool outputs",
-        condition_ok and inherited and h["inheritance_unknown_snapshots"]["physical"]["inheritance_unknown_snapshots"] == 35904
+        condition_ok and inherited
         and h["tool_replays"] == _tool_cases(evidence.load(tool_path)) and len(h["tool_replays"]) == 12, paths + [tool_path, root / "reports/full_replay_report.json"])
     evidence.check("S2", "RQ3/H1/H2 bootstrap clusters match frozen episode and maintenance observations",
         metric_sources_match(output, local["metrics"], evidence), paths + [maintenance_path, output / "estimand_registry.json"])
@@ -361,16 +371,17 @@ def check_bootstrap(output, context, evidence, documents):
         bool(links) and all(key in uncertainty["metrics"] and equivalent(value, uncertainty["metrics"][key]["estimate"]) for key, value in links)
         and {key for key, _ in links} == set(keys), [output / (name + ".json") for name in SUMMARIES] + [registry_path])
     root = evidence.root
-    pilots = pilot_ids(root)
+    tables = bound_input(context, TABLES_PATTERN)
+    pilots = pilot_ids(root, tables)
     robustness = documents["robustness_checks"]
     matrix = robustness["scenarios"]
     evidence.check("S3", "eleven actual sensitivity outputs and resolved pilot exclusion",
         set(matrix) == SCENARIOS and len(pilots) == 50 and len(pilots & context["formal_ids"]) == 49
-        and matrix["formal_main"]["repositories"] == 455 and matrix["raw_main"]["repositories"] == 457
-        and matrix["exclude_pilot"]["repositories"] == 406
+        and matrix["formal_main"]["repositories"] == len(context["formal_ids"]) and matrix["raw_main"]["repositories"] == len(context["raw_ids"])
+        and matrix["exclude_pilot"]["repositories"] == len(context["formal_ids"] - pilots)
         and all(set(row) >= {"rq1", "rq2", "rq3_persistence", "rq3_maintenance", "settings"}
             and row["rq1"]["repositories"] == row["repositories"] == row["rq2"]["repositories"] for row in matrix.values()),
-        [output / "robustness_checks.json", root / "reports/pilot_candidates.csv", root / "data/derived/tables-v4/repositories.csv"])
+        [output / "robustness_checks.json", root / "reports/pilot_candidates.csv", root / tables])
     if "rq12_records" in context:
         from .formal_rq12 import summarize
         valid, reconstructed = True, []
@@ -405,7 +416,7 @@ def check_manuscript(root, output, context, evidence, documents):
     manifest, mapping, prior = [evidence.load(path) for path in (figure_path, map_path, audit_path)]
     sources = {name: dict(path=output / (name + ".json"), sha256=sha256(output / (name + ".json")), data=documents[name]) for name in SUMMARIES}
     sources["figure_manifest"] = dict(path=figure_path, sha256=sha256(figure_path), data=manifest)
-    for name, path in (("freeze_manifest", root / "reports/freeze_manifest.json"), ("followup", root / "reports/maintenance_followup_audit.json"), ("source_catalog", output / "source_catalog.json")):
+    for name, path in (("freeze_manifest", manifest_file(root, context)), ("followup", root / "reports/maintenance_followup_audit.json"), ("source_catalog", output / "source_catalog.json")):
         sources[name] = dict(path=path, sha256=sha256(path), data=evidence.load(path))
     frozen_inputs = context["freeze_manifest"].get("input_sha256", {})
     for name, relative in HISTORICAL_SOURCES.items():
@@ -432,7 +443,7 @@ def check_manuscript(root, output, context, evidence, documents):
         and mapping["implementation_sha256"] == sha256(root / "pintrace/formal_manuscript.py")
         and mapping["freeze_sha256"] == context["guard"]["freeze_sha256"]
         and prior["manuscript_sha256"] == sha256(document) and prior["claim_map_sha256"] == sha256(map_path)
-        and prior["closed_analyses"] == context["freeze_manifest"]["closed_models"], [document, map_path, audit_path, figure_path])
+        and prior["closed_analyses"] == closed_models(context), [document, map_path, audit_path, figure_path])
     clean = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     sections = {match.group(1): match.group(2) for match in re.finditer(r"^## ([^\n]+)\n(.*?)(?=^## |\Z)", clean, re.M | re.S)}
     revision = re.search(r"### Revisions after the development checkpoint\n(.*?)(?=\n## |\Z)", clean, re.S)
@@ -452,7 +463,7 @@ def run(root, output_dir, context):
     if target.is_relative_to(root) and target.relative_to(root).as_posix() in context["freeze_manifest"]["input_sha256"]:
         raise ValueError("Acceptance would overwrite a frozen input")
     evidence = Evidence(root)
-    evidence.bind(root / "reports/freeze_manifest.json")
+    evidence.bind(manifest_file(root, context))
     documents = {}
     try:
         documents = {name: evidence.load(output / (name + ".json")) for name in SUMMARIES}

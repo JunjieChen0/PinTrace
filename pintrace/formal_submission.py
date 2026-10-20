@@ -93,7 +93,7 @@ def freeze(root, run_manifest):
         bind(name, digest)
     additional = (run_path, final_guard_path, submission_guard_path, original_path, root / "reports/formal_test_results.json",
                   root / "paper/manuscript.md", root / "reports/pilot_candidates.csv", root / "requirements-formal.txt",
-                  root / "study.toml",
+                  root / "study.toml", root / "docs/formal_analysis_protocol.md", root / "reports/formal_stats_progress.md",
                   *sorted((root / "pintrace").glob("formal_*.py")))
     for path in additional:
         bind(path, sha256(path))

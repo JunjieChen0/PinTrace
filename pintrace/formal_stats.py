@@ -10,7 +10,8 @@ from pathlib import Path
 import shutil
 import traceback
 
-from .formal_common import cluster_bootstrap, make_context, sha256, verify_frozen_inputs, write_json
+from .formal_common import (FROZEN_MANIFEST, WORKING_MANIFEST, cluster_bootstrap, make_context, sha256,
+                            verify_frozen_inputs, write_json)
 
 
 REPORTS = ("rq1_summary", "rq2_summary", "rq3_persistence_summary", "rq3_maintenance_results", "h1_h2_summary", "robustness_checks", "uncertainty_intervals")
@@ -30,14 +31,22 @@ def publish(root, source, destination, frozen):
         raise ValueError("Published artifact differs from the staged artifact")
 
 
-def run(root, *, extract_only=False, cache_directory=None):
+WORKING_DIRECTORY = "formal-stats-v3"
+
+
+def run(root, *, extract_only=False, cache_directory=None, working=False):
+    """``working`` runs against reports/working_input_manifest.json into a new batch directory.
+
+    The default keeps the original frozen authority and its formal-stats-v1 directory.
+    """
     root = Path(root).resolve()
-    directory = root / "data/derived/formal-stats-v1"
+    manifest_path = WORKING_MANIFEST if working else FROZEN_MANIFEST
+    directory = root / "data/derived" / (WORKING_DIRECTORY if working else "formal-stats-v1")
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     run_path = directory / "runs" / stamp / "manifest.json"
     state = dict(rule_version="formal-stats-run-v1", started_at_utc=now(), pid=os.getpid(), completed=False,
-                 extract_only=extract_only, stages=[], implementation_sha256=sha256(Path(__file__)))
+                 extract_only=extract_only, manifest_path=manifest_path, stages=[], implementation_sha256=sha256(Path(__file__)))
     write_json(run_path, state)
     sources = {str(Path(__file__).relative_to(root).as_posix()): state["implementation_sha256"],
                "pintrace/formal_common.py": sha256(root / "pintrace/formal_common.py")}
@@ -59,7 +68,7 @@ def run(root, *, extract_only=False, cache_directory=None):
         return imported
 
     try:
-        guard = stage("verify_all_frozen_inputs_before", lambda: verify_frozen_inputs(root, progress=print))
+        guard = stage("verify_all_frozen_inputs_before", lambda: verify_frozen_inputs(root, progress=print, manifest_path=manifest_path))
         context = make_context(root, guard)
         output = directory / ("extracted" if extract_only else "results")
         output.mkdir(parents=True, exist_ok=True)
@@ -92,7 +101,7 @@ def run(root, *, extract_only=False, cache_directory=None):
                        metrics=len(first["metrics"]), round_one_sha256=sha256(output / "uncertainty_round_one.json"),
                        round_two_sha256=sha256(output / "uncertainty_round_two.json"), point_and_interval_bytes_identical=True))
             context["report_paths"] = {name: output / (name + ".json") for name in REPORTS}
-            context["report_paths"]["freeze_manifest"] = root / "reports/freeze_manifest.json"
+            context["report_paths"]["freeze_manifest"] = root / manifest_path
             for name in REPORTS:
                 publish(root, output / (name + ".json"), "reports/" + name + ".json", guard["manifest"])
             stage("figures_and_tables", lambda: module("formal_figures").run(root, output, context))
@@ -103,7 +112,7 @@ def run(root, *, extract_only=False, cache_directory=None):
             publish(root, output / "manuscript.md", "paper/manuscript.md", guard["manifest"])
             stage("formal_acceptance", lambda: module("formal_acceptance").run(root, output, context))
             publish(root, output / "formal_acceptance.json", "reports/formal_acceptance.json", guard["manifest"])
-        final_guard = stage("verify_all_frozen_inputs_after", lambda: verify_frozen_inputs(root, progress=print))
+        final_guard = stage("verify_all_frozen_inputs_after", lambda: verify_frozen_inputs(root, progress=print, manifest_path=manifest_path))
         if final_guard["freeze_sha256"] != guard["freeze_sha256"]:
             raise ValueError("Input freeze authority changed during the batch")
         changed_sources = [name for name, expected in sources.items() if sha256(root / name) != expected]
@@ -127,5 +136,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--extract-only", action="store_true", help="Checkpoint the expensive source-bound extraction before producing the remaining artifacts")
     parser.add_argument("--cache-directory", type=Path, help="Use an explicitly verified compact extraction revision")
+    parser.add_argument("--working", action="store_true", help="Use reports/working_input_manifest.json (freeze paused) and write formal-stats-v3")
     args = parser.parse_args()
-    run(Path(__file__).resolve().parents[1], extract_only=args.extract_only, cache_directory=args.cache_directory)
+    run(Path(__file__).resolve().parents[1], extract_only=args.extract_only, cache_directory=args.cache_directory, working=args.working)

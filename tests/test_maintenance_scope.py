@@ -65,7 +65,7 @@ def test_input_hash_mismatch_refuses_output(tmp_path):
     matches.write_text(json.dumps(row()) + "\n")
     risk = reports / "riskset_summary.json"
     risk.write_text("{}")
-    summary = dict(rule_version="opportunity-join-v4", inputs_unchanged=True,
+    summary = dict(rule_version="opportunity-join-v5", inputs_unchanged=True,
                    input_sha256={"reports/riskset_summary.json": hashlib.sha256(risk.read_bytes()).hexdigest()},
                    details={"opportunity_matches": dict(path="matches.jsonl", sha256="0" * 64)})
     (reports / "opportunity_join_summary.json").write_text(json.dumps(summary))

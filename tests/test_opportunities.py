@@ -52,6 +52,72 @@ def test_known_hourly_rate_limit_does_not_issue_more_requests(tmp_path, monkeypa
         archive.fetch("https://archive.softwareheritage.org/api/1/test/")
 
 
+class FakeResponse:
+    status_code = 200
+    headers = {"Date": "Mon, 20 Oct 2026 00:00:00 GMT"}
+    links = {}
+    text = ""
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"ok": True}
+
+
+def test_anonymous_requests_carry_no_authorization_header(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr("pintrace.opportunities.requests.get", lambda url, **kw: seen.append(kw["headers"]) or FakeResponse())
+    archive = Archive(tmp_path)
+    archive.fetch("https://archive.softwareheritage.org/api/1/test/")
+    assert "Authorization" not in seen[0] and archive.authenticated is False
+
+
+def test_token_is_sent_as_bearer_and_never_written_to_the_cache(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr("pintrace.opportunities.requests.get", lambda url, **kw: seen.append(kw["headers"]) or FakeResponse())
+    secret = "test-token-value"
+    archive = Archive(tmp_path, token=secret)
+    archive.fetch("https://archive.softwareheritage.org/api/1/test/")
+    assert seen[0]["Authorization"] == "Bearer " + secret and archive.authenticated is True
+    assert all(secret not in path.read_text(encoding="utf-8") for path in tmp_path.glob("*.json"))
+
+
+def test_rate_limit_record_notes_authentication_without_the_token(tmp_path, monkeypatch):
+    class Limited(FakeResponse):
+        status_code = 429
+        headers = {"X-Ratelimit-Reset": str(int(time.time()) + 600)}
+        text = "limited"
+    monkeypatch.setattr("pintrace.opportunities.requests.get", lambda url, **kw: Limited())
+    secret = "test-token-value"
+    archive = Archive(tmp_path, token=secret)
+    with pytest.raises(RuntimeError, match="rate limit active"):
+        archive.fetch("https://archive.softwareheritage.org/api/1/test/")
+    assert archive.last_rate_limit["authenticated"] is True and secret not in str(archive.last_rate_limit)
+
+
+def test_archive_token_comes_from_the_environment_and_blank_means_anonymous(monkeypatch, tmp_path):
+    from pintrace.opportunities import TOKEN_VARIABLE, archive_token
+    monkeypatch.setattr("pintrace.opportunities.TOKEN_FILE", tmp_path / "absent")
+    monkeypatch.delenv(TOKEN_VARIABLE, raising=False)
+    assert archive_token() == ""
+    monkeypatch.setenv(TOKEN_VARIABLE, "  \n")
+    assert archive_token() == ""
+    monkeypatch.setenv(TOKEN_VARIABLE, " abc \n")
+    assert archive_token() == "abc"
+
+
+def test_archive_token_falls_back_to_the_ignored_file_and_the_variable_wins(monkeypatch, tmp_path):
+    from pintrace.opportunities import TOKEN_VARIABLE, archive_token
+    file = tmp_path / ".token"
+    file.write_text("from-file\n", encoding="utf-8")
+    monkeypatch.setattr("pintrace.opportunities.TOKEN_FILE", file)
+    monkeypatch.delenv(TOKEN_VARIABLE, raising=False)
+    assert archive_token() == "from-file"
+    monkeypatch.setenv(TOKEN_VARIABLE, "from-variable")
+    assert archive_token() == "from-variable"
+
+
 def test_release_pages_do_not_stop_at_old_publication_date():
     class Client:
         pages = []

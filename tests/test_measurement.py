@@ -219,7 +219,7 @@ def test_v3_output_preserves_existing_v1_and_v2_records(monkeypatch, tmp_path):
         path.write_text("legacy " + path.parent.name + " preserved", encoding="utf-8")
     monkeypatch.setattr(measurement, "git", lambda *args: pytest.fail("Alias conflict must stop before Git"))
     result = measurement.collect(dict(repository="a/b", repository_id="10", alias_baseline_conflict=True), tmp_path, {}, "")
-    assert result["measurement_rules_version"] == "measurement-v3"
+    assert result["measurement_rules_version"] == "measurement-v4"
     assert result["lineage_rules_version"] == "lineage-v2"
     assert all(path.read_text(encoding="utf-8") == "legacy " + path.parent.name + " preserved" for path in legacy)
     assert (tmp_path / "data/derived" / measurement.BATCH_DIRECTORY / "10.json").exists()

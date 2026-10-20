@@ -148,7 +148,7 @@ def test_export_manifest_binds_io_version_and_actual_loader_source(tmp_path, mon
     monkeypatch.setattr(tables, "select_batch", lambda root: dict(measurements={}, baselines={}, upstreams={},
         input_sha256={}, riskset_summary=None, join_summary=None, evidence_path=None, excluded_later_measurement_files=[]))
     result = tables.export(tmp_path)
-    assert result["rule_version"] == "tables-v4"
+    assert result["rule_version"] == "tables-v5"
     assert result["measurement_io_version"] == IO_RULES_VERSION
     source = Path(tables.__file__).with_name("measurement_io.py").resolve()
     assert result["input_sha256"][source.as_posix()] == tables.digest(source)

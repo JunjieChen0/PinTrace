@@ -40,7 +40,7 @@ def test_shifted_anchor_reconstructs_real_baseline_instead_of_relabeling_old_per
                               date=datetime.fromtimestamp(point, timezone.utc).isoformat(), complete=True,
                               references=enrich_workflow(text, ".github/workflows/ci.yml")["references"]))
     detail = dict(summary=dict(repository_id="1", repository="owner/repo", canonical_repository="owner/repo",
-                               status="measured", measurement_rules_version="measurement-v3", observed_ancestry_covers_end=True,
+                               status="measured", measurement_rules_version="measurement-v4", observed_ancestry_covers_end=True,
                                baseline_commit="sha-0", endpoint_commit="sha-2"), snapshots=snapshots,
                   timeline=dict(endpoint_commit="sha-2"), replay={"passed": True}, lineages=reconstruct("owner/repo", snapshots))
     study = dict(target_action=TARGET, event_anchor="2025-03-14T00:00:00Z", window_end="2026-03-14T23:59:59Z")

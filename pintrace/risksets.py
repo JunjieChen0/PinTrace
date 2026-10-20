@@ -13,7 +13,7 @@ from .pilot import timestamp
 from .measurement import BATCH_DIRECTORY, RULES_VERSION as MEASUREMENT_RULES_VERSION
 from .measurement_io import IO_RULES_VERSION, file_sha256, load_analysis_measurement
 
-RULES_VERSION = "risksets-v4"
+RULES_VERSION = "risksets-v5"
 POST_EPISODE_KINDS = ("post_anchor_observed_pin", "post_anchor_born_fixed")
 KNOWN_FIXED_ENTRY_EVENTS = {"first_observed_action", "copied_reference", "reintroduced_action", "replace"}
 DEFAULT_REGULAR_ACTIONS = ("actions/checkout", "actions/setup-python", "actions/setup-node",

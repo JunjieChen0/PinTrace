@@ -19,8 +19,8 @@ from .pilot import iso, timestamp
 from .workflow import action_counts
 
 
-RULES_VERSION = "measurement-v3"
-BATCH_DIRECTORY = "measurement-v3"
+RULES_VERSION = "measurement-v4"
+BATCH_DIRECTORY = "measurement-v4"
 SOURCE_NAMES = ("measurement.py", "lineage.py", "configuration.py", "workflow.py", "history.py", "github.py", "pilot.py")
 
 

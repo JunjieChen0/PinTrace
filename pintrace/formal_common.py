@@ -5,11 +5,20 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import tomllib
 
 
 SEED = 20261018
 REPLICATES = 2000
+FROZEN_MANIFEST = "reports/freeze_manifest.json"
+WORKING_MANIFEST = "reports/working_input_manifest.json"
+
+
+def manifest_file(root, source=None):
+    """Path of the input authority a guard or context was verified against."""
+    guard = (source or {}).get("guard", source) or {}
+    return Path(root).resolve() / guard.get("manifest_path", FROZEN_MANIFEST)
 
 
 def sha256(path):
@@ -23,13 +32,74 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
 
-def verify_frozen_inputs(root, *, progress=None):
+def annotate(result):
+    """Flag intervals that are degenerate or built from fewer replicates than requested; they never prove absence of risk."""
+    if result["estimate"] is None:
+        status = "undefined"
+    elif result["lower"] is not None and result["lower"] == result["upper"]:
+        status = "zero_degenerate" if result["estimate"] == 0 else "constant_degenerate"
+    elif result["valid_replicates"] < result["requested_replicates"]:
+        status = "partial_replicates"
+    else:
+        status = "estimated"
+    return dict(result, status=status)
+
+
+def bound_input(context, pattern):
+    """The single input path of the active authority matching ``pattern`` (a regular expression)."""
+    found = sorted(name for name in context["freeze_manifest"]["input_sha256"] if re.fullmatch(pattern, name))
+    if len(found) != 1:
+        raise ValueError(f"The input authority must bind exactly one path matching {pattern!r}; found {len(found)}")
+    return found[0]
+
+
+def bound_measurements(context):
+    """Repository id -> bound measurement file; every file must sit in one measurement-vN directory."""
+    files = {}
+    for name in context["freeze_manifest"]["input_sha256"]:
+        match = re.fullmatch(r"data/derived/(measurement-v\d+)/(\d+)\.json", name)
+        if match:
+            files[match.group(2)] = name
+    if len({Path(name).parent for name in files.values()}) > 1:
+        raise ValueError("The input authority binds measurements from more than one batch directory")
+    return files
+
+
+def closed_models(context):
+    """Closed-analysis declarations of the active authority.
+
+    The frozen manifest holds them at top level; a working-input manifest records the same declarations
+    under ``carried_from_original_freeze`` because it inherits them unchanged.
+    """
+    manifest = context["freeze_manifest"]
+    if "closed_models" in manifest:
+        return manifest["closed_models"]
+    return manifest["carried_from_original_freeze"]["closed_models"]
+
+
+def expected_counts(context):
+    """Population and born-fixed sizes declared by the active authority (None when it does not declare them)."""
+    manifest = context["freeze_manifest"]
+    born = manifest.get("formal_episode_kind_counts", {}).get("post_anchor_born_fixed", {}).get("episodes")
+    return dict(raw=manifest.get("raw_repository_count"), formal=manifest.get("formal_repository_count"), born_fixed=born)
+
+
+def verify_frozen_inputs(root, *, progress=None, manifest_path=FROZEN_MANIFEST):
+    """Rehash every input bound by one authority.
+
+    The default authority is the immutable freeze manifest and must say ``frozen``.
+    A working-input manifest (freeze paused) must say ``working_inputs``; neither
+    status is accepted at the other's path, so a working batch can never pass for
+    a frozen one.
+    """
     root = Path(root).resolve()
-    path = root / "reports/freeze_manifest.json"
+    path = root / manifest_path
     digest = sha256(path)
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    if manifest.get("status") != "frozen":
-        raise ValueError("Formal analysis requires frozen inputs")
+    expected_status = "frozen" if manifest_path == FROZEN_MANIFEST else "working_inputs"
+    if manifest.get("status") != expected_status:
+        raise ValueError("Formal analysis requires frozen inputs" if expected_status == "frozen"
+                         else "A working-input manifest must declare status working_inputs")
     total_bytes = 0
     for index, (name, expected) in enumerate(manifest["input_sha256"].items(), 1):
         source = (root / name).resolve()
@@ -40,7 +110,7 @@ def verify_frozen_inputs(root, *, progress=None):
             progress(f"Frozen inputs verified: {index}/{len(manifest['input_sha256'])}")
     if sha256(path) != digest:
         raise ValueError("Freeze manifest changed during input verification")
-    return dict(root=str(root), freeze_sha256=digest, manifest=manifest,
+    return dict(root=str(root), freeze_sha256=digest, manifest=manifest, manifest_path=manifest_path,
                 checked_at_utc=datetime.now(timezone.utc).isoformat(),
                 files=len(manifest["input_sha256"]), bytes=total_bytes, verified=True)
 
@@ -64,7 +134,7 @@ def require_context(root, context, inputs=()):
     guard = context.get("guard", {})
     if not guard.get("verified") or guard.get("root") != str(root):
         raise ValueError("Missing full frozen-input guard")
-    if sha256(root / "reports/freeze_manifest.json") != guard["freeze_sha256"]:
+    if sha256(manifest_file(root, guard)) != guard["freeze_sha256"]:
         raise ValueError("Freeze authority changed")
     expected = guard["manifest"]["input_sha256"]
     for name in inputs:

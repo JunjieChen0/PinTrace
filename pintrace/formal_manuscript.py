@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 
-from .formal_common import require_context, sha256, write_json
+from .formal_common import closed_models, manifest_file, require_context, sha256, write_json
 
 RULES_VERSION = "formal-manuscript-v1"
 IMPORTED_SOURCE_SHA256 = sha256(Path(__file__))
@@ -694,7 +694,8 @@ def run(root, output_dir, context):
             raise ValueError("Statistical report belongs to a different frozen batch: " + name)
         if "checks" in report and not all(value is True for value in report["checks"].values()):
             raise ValueError("Statistical report has failed checks: " + name)
-    for name, filename in (("freeze_manifest", "freeze_manifest"), ("followup", "maintenance_followup_audit"), ("maintenance_scope", "maintenance_scope_summary")):
+    load("freeze_manifest", manifest_file(root, context))
+    for name, filename in (("followup", "maintenance_followup_audit"), ("maintenance_scope", "maintenance_scope_summary")):
         load(name, root / "reports" / (filename + ".json"))
     checkpoint = root / "data/derived/analysis-v4/checkpoints/152-20261018T113552Z/reports/table_manifest.json"
     load("development_checkpoint", checkpoint)
@@ -728,7 +729,7 @@ def run(root, output_dir, context):
         manuscript_sha256=sha256(document), claim_map_sha256=sha256(output_dir / "claim_evidence_map.json"),
         counts=dict(claims=len(writer.claims), artifacts=len(artifacts["artifacts"])),
         visible_english_words=len(re.findall(r"\b[A-Za-z]+\b", re.sub(r"<!--.*?-->", "", text, flags=re.S))),
-        closed_analyses=context["freeze_manifest"]["closed_models"],
+        closed_analyses=closed_models(context),
         limits=["A programmatic claim audit is not peer review, semantic classification validation, or causal identification."])
     write_json(output_dir / "manuscript_audit.json", audit)
     if not audit["audit_passed"]:

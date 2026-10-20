@@ -40,6 +40,9 @@ def rq12_fixture(tmp_path):
     write_json(output / "rq12_record_cache_receipt.json", dict(path=str(cache), sha256=sha256(cache), freeze_sha256="frozen",
         implementation_sha256=sha256(root / "pintrace/formal_rq12.py")))
     context = dict(rq12_records=records, formal_ids=ids - {"456", "457"}, raw_ids=ids,
+        freeze_manifest=dict(raw_repository_count=457, formal_repository_count=455,
+            formal_episode_kind_counts=dict(post_anchor_born_fixed=dict(episodes=65)),
+            input_sha256={"data/derived/tables-v4/repositories.csv": "0" * 64}),
         guard=dict(freeze_sha256="frozen"), study=dict(target_action="tj-actions/changed-files"), metrics=[],
         populations=dict(formal=sorted(ids - {"456", "457"}), raw=sorted(ids)))
     with (root / "reports/risksets.csv").open("w", encoding="utf-8", newline="") as stream:
@@ -183,7 +186,10 @@ def bootstrap_fixture(tmp_path, monkeypatch):
     root, output = tmp_path, tmp_path / "batch"
     output.mkdir()
     formal, raw = {str(i) for i in range(1, 456)}, {str(i) for i in range(1, 458)}
-    context = dict(formal_ids=formal, raw_ids=raw, populations=dict(formal=sorted(formal), raw=sorted(raw),
+    context = dict(freeze_manifest=dict(raw_repository_count=457, formal_repository_count=455,
+            formal_episode_kind_counts=dict(post_anchor_born_fixed=dict(episodes=65)),
+            input_sha256={"data/derived/tables-v4/repositories.csv": "0" * 64}),
+        formal_ids=formal, raw_ids=raw, populations=dict(formal=sorted(formal), raw=sorted(raw),
         formal_exclude_pilot=sorted(formal - {str(i) for i in range(1, 50)})), metrics=[],
         study=dict(event_anchor="2025-03-14T00:00:00Z", window_end="2026-03-03T00:00:00Z"))
     point = add_ratio(context, "rq1.test", [("1", 1, 1), ("2", 0, 1), ("3", 0, 1)], binary=True)
@@ -217,7 +223,7 @@ def bootstrap_fixture(tmp_path, monkeypatch):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture\n", encoding="utf-8")
-    monkeypatch.setattr("pintrace.formal_robustness.pilot_ids", lambda root: {str(i) for i in range(1, 50)} | {"457"})
+    monkeypatch.setattr("pintrace.formal_robustness.pilot_ids", lambda root, tables: {str(i) for i in range(1, 50)} | {"457"})
     return root, output, context, documents
 
 

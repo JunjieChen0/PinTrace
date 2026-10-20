@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import tomllib
@@ -210,8 +211,24 @@ def delay_bounds(updated_at, opportunity):
             "evidence_grade": opportunity["evidence_grade"]}
 
 
+TOKEN_VARIABLE = "SWH_TOKEN"
+TOKEN_FILE = Path(__file__).resolve().parents[1] / "input/.token"
+
+
+def archive_token():
+    """Bearer token for authenticated Software Heritage requests; empty means anonymous access.
+
+    The environment variable wins. Otherwise the git-ignored `input/.token` file is read in place, so no second copy of the
+    secret is made. The value is never logged, cached or written into a report.
+    """
+    value = os.environ.get(TOKEN_VARIABLE, "").strip()
+    if not value and TOKEN_FILE.is_file():
+        value = TOKEN_FILE.read_text(encoding="utf-8").strip()
+    return value
+
+
 class Archive:
-    def __init__(self, cache, cache_only=False, max_requests=None):
+    def __init__(self, cache, cache_only=False, max_requests=None, token=""):
         self.cache = Path(cache)
         self.lock = threading.Lock()
         self.last_request = 0
@@ -220,6 +237,17 @@ class Archive:
         self.max_requests = max_requests
         self.requests_issued = 0
         self.last_rate_limit = None
+        self.token = token or ""
+
+    @property
+    def authenticated(self):
+        return bool(self.token)
+
+    def headers(self):
+        headers = {"User-Agent": "PinTrace upstream evidence study"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        return headers
 
     def fetch(self, url):
         path = self.cache / (hashlib.sha256(url.encode()).hexdigest() + ".json")
@@ -237,14 +265,14 @@ class Archive:
                     raise RuntimeError("Archive request budget exhausted; missing evidence remains unknown")
                 time.sleep(max(0, self.last_request + 0.8 - time.monotonic()))
                 self.requests_issued += 1
-                response = requests.get(url, headers={"User-Agent": "PinTrace upstream evidence study"}, timeout=(15, 45))
+                response = requests.get(url, headers=self.headers(), timeout=(15, 45))
                 self.last_request = time.monotonic()
                 if response.status_code == 429:
                     reset = response.headers.get("X-Ratelimit-Reset", "")
                     retry = response.headers.get("Retry-After", "")
                     self.unavailable_until = max(time.time() + 1, int(reset) if reset.isdigit() else
                                                  time.time() + (int(retry) if retry.isdigit() else 60))
-                    self.last_rate_limit = {"unavailable_until": self.unavailable_until, "url": url,
+                    self.last_rate_limit = {"unavailable_until": self.unavailable_until, "url": url, "authenticated": self.authenticated,
                                             "status_code": 429, "headers": dict(response.headers),
                                             "body": response.text[:2000]}
                     raise RuntimeError(f"Archive rate limit active until UTC epoch {self.unavailable_until}: {response.text[:300]}")
@@ -402,7 +430,7 @@ def main():
     root = args.root
     study = tomllib.loads((root / "study.toml").read_text(encoding="utf-8"))["study"]
     archive = Archive(root / "data/cache/softwareheritage/requests", cache_only=args.cached_archives_only,
-                      max_requests=args.archive_max_requests)
+                      max_requests=args.archive_max_requests, token=archive_token())
     throttle = root / "data/cache/softwareheritage/rate-limit.json"
     if throttle.exists():
         throttle_data = json.loads(throttle.read_text(encoding="utf-8"))
@@ -480,7 +508,7 @@ def main():
     report = {"rule_version": "opportunities-v2", "checked_at": datetime.now(timezone.utc).isoformat(),
               "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "archive_requests_issued": archive.requests_issued, "archive_request_budget": archive.max_requests,
-              "archive_cache_only": archive.cache_only,
+              "archive_cache_only": archive.cache_only, "archive_authenticated": archive.authenticated,
               "window": study, "upstreams": summaries,
               "limits": ["Archived observations are not exact tag publication times.",
                          "Different bindings bracket at least one change; first availability and unseen reversions remain unknown.",

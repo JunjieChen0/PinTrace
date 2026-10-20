@@ -569,7 +569,7 @@ def test_v4_join_writes_new_output_and_preserves_v1_v2_v3_evidence(tmp_path, mon
     (tmp_path / "study.toml").write_text("[study]\n" + "\n".join(key + " = " + json.dumps(value) for key, value in STUDY.items()), encoding="utf-8")
     monkeypatch.setattr(opportunity_join, "__file__", str(tmp_path / "pintrace/opportunity_join.py"))
     opportunity_join.main()
-    assert opportunity_join.RULES_VERSION == "opportunity-join-v4"
+    assert opportunity_join.RULES_VERSION == "opportunity-join-v5"
     output = tmp_path / "data/derived" / opportunity_join.RULES_VERSION / "opportunity_matches.jsonl"
     assert output.exists()
     row = json.loads(output.read_text(encoding="utf-8").splitlines()[0])

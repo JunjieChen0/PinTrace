@@ -5,19 +5,21 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
-from .formal_common import require_context, sha256, write_json
+from .formal_common import bound_input, require_context, sha256, write_json
 from .pilot import timestamp
 from .risksets import build_risksets
 
 
 DAY = 86400
+TABLES_PATTERN = r"data/derived/tables-v\d+/repositories\.csv"
 
 
-def pilot_ids(root):
+def pilot_ids(root, tables):
+    """``tables`` is the repositories.csv path the active input authority binds."""
     root = Path(root)
     with (root / "reports/pilot_candidates.csv").open(encoding="utf-8-sig", newline="") as stream:
         names = [row["repository"].lower() for row in csv.DictReader(stream)]
-    with (root / "data/derived/tables-v4/repositories.csv").open(encoding="utf-8", newline="") as stream:
+    with (root / tables).open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
     lookup = {}
     for row in rows:
@@ -135,10 +137,11 @@ def run(root, output_dir, context):
     from .formal_rq3 import number, summarize_maintenance, summarize_persistence
 
     root, output_dir = Path(root), Path(output_dir)
-    require_context(root, context, inputs=("study.toml", "data/derived/tables-v4/repositories.csv"))
+    tables = bound_input(context, TABLES_PATTERN)
+    require_context(root, context, inputs=("study.toml", tables))
     study = context["study"]
     anchor, end = timestamp(study["event_anchor"]), timestamp(study["window_end"])
-    pilots = pilot_ids(root)
+    pilots = pilot_ids(root, tables)
     records, rq3 = context["rq12_records"], context["rq3_data"]
     details = context.get("rq12_target_measurements")
     if isinstance(details, (str, Path)):
@@ -208,8 +211,8 @@ def run(root, output_dir, context):
                   pilot=dict(candidate_names=50, uniquely_resolved_ids=len(pilots), formal_intersection=len(pilots & context["formal_ids"]),
                              raw_intersection=len(pilots & context["raw_ids"]), remaining_formal=len(context["formal_ids"] - pilots)),
                   scenarios=results, checks=dict(all_eleven_scenarios_generated=len(results) == 11,
-                    pilot_mapping_complete=len(pilots) == 50, formal_main_denominator=results["formal_main"]["repositories"] == 455,
-                    raw_main_denominator=results["raw_main"]["repositories"] == 457,
+                    pilot_mapping_complete=len(pilots) == 50, formal_main_denominator=results["formal_main"]["repositories"] == len(context["formal_ids"]),
+                    raw_main_denominator=results["raw_main"]["repositories"] == len(context["raw_ids"]),
                     complete_target_projection_matches_frozen_episodes=actual == frozen),
                   target_projection_verification=dict(episodes=len(projected), compared_fields=list(fields), all_original_episodes_match=True),
                   limits=["Calendar segment estimates condition on the original observable cohort, not platform adoption.",

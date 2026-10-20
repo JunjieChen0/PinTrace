@@ -1,8 +1,10 @@
 import copy
+import hashlib
 import json
 
 import pytest
 
+import pintrace.measurement as measurement
 from pintrace.lineage import reconstruct
 import pintrace.verify_measurement as verify
 from pintrace.workflow import classify_uses
@@ -150,6 +152,159 @@ def test_any_frozen_input_or_replay_disagreement_closes_gate(monkeypatch, tmp_pa
                                                                  dict(required_configuration_commits=["extra"], configuration_only_commits=["extra"])))
     path.write_text(json.dumps(detail), encoding="utf-8")
     assert not verify.verify_one(tmp_path, path, record, implementation, {})["passed"]
+
+
+def test_streamed_detail_equals_json_loads_for_every_section(monkeypatch, tmp_path):
+    path, _, _, detail = verify_fixture(monkeypatch, tmp_path)
+    whole = verify.load_detail(path)
+    monkeypatch.setattr(verify, "LARGE_FILE_BYTES", 0)
+    streamed = verify.load_detail(path)
+    assert streamed == whole == json.loads(path.read_text(encoding="utf-8"))
+    assert set(streamed) <= verify.DETAIL_KEYS and streamed["snapshots"] == detail["snapshots"]
+
+
+def test_streamed_detail_without_a_summary_is_rejected(monkeypatch, tmp_path):
+    path = tmp_path / "1.json"
+    path.write_text(json.dumps({"snapshots": []}), encoding="utf-8")
+    monkeypatch.setattr(verify, "LARGE_FILE_BYTES", 0)
+    with pytest.raises(KeyError):
+        verify.load_detail(path)
+
+
+def test_summary_is_read_without_the_rest_of_the_file(tmp_path):
+    path = tmp_path / "1.json"
+    path.write_text('{"summary": {"repository_id": "1", "status": "measured"}, "snapshots": [', encoding="utf-8")
+    assert verify.read_summary(path) == {"repository_id": "1", "status": "measured"}
+    path.write_text('{"snapshots": []}', encoding="utf-8")
+    with pytest.raises(KeyError):
+        verify.read_summary(path)
+
+
+def test_heavy_files_are_separated_from_the_worker_pool_and_ordered_by_size(monkeypatch, tmp_path):
+    sizes = {"a": 10, "b": 5000, "c": 200, "d": 9000}
+    paths = []
+    for name, size in sizes.items():
+        path = tmp_path / (name + ".json")
+        path.write_bytes(b"x" * size)
+        paths.append(path)
+    monkeypatch.setattr(verify, "HEAVY_FILE_BYTES", 1000)
+    ordinary, heavy = verify.split_by_weight(paths)
+    assert [p.stem for p in ordinary] == ["a", "c"] and [p.stem for p in heavy] == ["b", "d"]
+
+
+def test_streamed_repository_verification_reaches_the_same_result_as_the_whole_file_read(monkeypatch, tmp_path):
+    path, record, implementation, _ = verify_fixture(monkeypatch, tmp_path)
+    whole = verify.verify_one(tmp_path, path, record, implementation, {})
+    (tmp_path / "data/derived" / verify.VERIFICATION_DIRECTORY / "1.json").unlink()
+    monkeypatch.setattr(verify, "LARGE_FILE_BYTES", 0)
+    streamed = verify.verify_one(tmp_path, path, record, implementation, {})
+    assert not streamed["cache_used"]
+    for key in ("passed", "checks", "quality", "errors", "conservation", "reference_fields", "cache_signature"):
+        assert streamed[key] == whole[key], key
+
+
+WORKFLOW_TEXT = "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@" + "a" * 40 + " # v4\n"
+
+
+class BlobClient:
+    def __init__(self, root, blob, content):
+        self.root, self.blob_id, self.content = root, blob, content
+
+    def blob(self, repository, commit, path, blob):
+        target = self.root / "data/cache/blobs" / self.blob_id
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.content)
+        return self.content
+
+
+def real_fixture(monkeypatch, tmp_path):
+    """Two real snapshots read through measurement.read_state, with the lineage rebuilt from them and written to disk."""
+    content = WORKFLOW_TEXT.encode("utf-8")
+    blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+    entry = dict(path=".github/workflows/ci.yml", blob=blob, mode="100644", kind="blob")
+    monkeypatch.setattr(measurement, "workflow_files", lambda *args: [dict(entry)])
+    monkeypatch.setattr(measurement, "configuration_files", lambda *args: [])
+    client = BlobClient(tmp_path, blob, content)
+    states = []
+    for sha, stamp in (("one", 100), ("two", 200)):
+        state = measurement.read_state(client, tmp_path, "owner/repo", dict(sha=sha, timestamp=stamp), "main", {})
+        state.update(renames={}, rename_evidence=[])
+        states.append(state)
+    record = dict(repository_id="1", repository="owner/repo", canonical_repository="owner/repo", observed_default_branch="main",
+                  baseline_commit="one", observed_head="two", git_directory="repo.git", cohort_record_sha256="cohort")
+    implementation = {"pintrace/measurement.py": "current"}
+    detail = dict(summary=dict(record), snapshots=states, implementation_sha256=implementation, timeline={"endpoint_commit": "two"},
+                  lineages=reconstruct("owner/repo", states), replay={"passed": True})
+    path = tmp_path / "data/derived" / verify.BATCH_DIRECTORY / "1.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(detail, indent=2), encoding="utf-8")
+    points = [dict(sha="one", timestamp=100), dict(sha="two", timestamp=200)]
+    monkeypatch.setattr(verify, "_source_state", lambda *args: "objects-unchanged")
+    monkeypatch.setattr(verify, "_source_state_of", lambda *args: "objects-unchanged")
+    monkeypatch.setattr(verify, "fixed_history", lambda *args: [dict(sha="two", timestamp=200), dict(sha="one", timestamp=100)])
+    monkeypatch.setattr(verify, "modification_commits", lambda *args: {"one", "two"})
+    monkeypatch.setattr(verify, "select_points", lambda *args: (points, dict(required_configuration_commits=["one"], configuration_only_commits=[])))
+    monkeypatch.setattr(verify, "_tree_objects", lambda *args: ([dict(entry)], []))
+    return path, record, implementation, detail
+
+
+def run_both_ways(monkeypatch, tmp_path, path, record, implementation):
+    results = {}
+    for mode, limit in (("whole", 2**60), ("streamed", 0)):
+        output = tmp_path / "data/derived" / verify.VERIFICATION_DIRECTORY / "1.json"
+        if output.exists():
+            output.unlink()
+        monkeypatch.setattr(verify, "STREAM_VERIFY_BYTES", limit)
+        results[mode] = verify.verify_one(tmp_path, path, record, implementation, {})
+    return results["whole"], results["streamed"]
+
+
+COMPARED = ("passed", "checks", "quality", "errors", "conservation", "reference_fields", "replay", "cache_signature",
+            "tree_mismatches", "configuration_only_commits", "missing_configuration_commits")
+
+
+def test_snapshot_by_snapshot_verification_gives_the_same_row_as_the_whole_file_read(monkeypatch, tmp_path):
+    path, record, implementation, _ = real_fixture(monkeypatch, tmp_path)
+    whole, streamed = run_both_ways(monkeypatch, tmp_path, path, record, implementation)
+    assert whole["passed"] and streamed["passed"]
+    for key in COMPARED:
+        assert streamed[key] == whole[key], key
+
+
+@pytest.mark.parametrize("corruption", ["stored_reference", "stored_event", "stored_conservation", "stored_quality", "extra_lineage_key",
+                                        "state_reference", "implementation", "tree", "missing_blob"])
+def test_both_verification_paths_close_the_gate_for_the_same_corruption(monkeypatch, tmp_path, corruption):
+    path, record, implementation, detail = real_fixture(monkeypatch, tmp_path)
+    if corruption == "stored_reference":
+        detail["lineages"]["references"][0]["ref"] = "changed"
+    elif corruption == "stored_event":
+        detail["lineages"]["events"].append(dict(event="remove", commit="two"))
+    elif corruption == "stored_conservation":
+        detail["lineages"]["conservation"]["known_exits"] = 5
+    elif corruption == "stored_quality":
+        detail["lineages"]["quality"]["history_has_unknown"] = True
+    elif corruption == "extra_lineage_key":
+        detail["lineages"]["unexpected"] = 1
+    elif corruption == "state_reference":
+        detail["snapshots"][1]["references"][0]["ref"] = "changed"
+    elif corruption == "implementation":
+        detail["implementation_sha256"] = {"different": "hash"}
+    elif corruption == "tree":
+        monkeypatch.setattr(verify, "_tree_objects", lambda *args: ([dict(path="extra.yml", mode="100644", kind="blob", blob="x")], []))
+    elif corruption == "missing_blob":
+        (tmp_path / "data/cache/blobs" / detail["snapshots"][0]["files"][0]["blob"]).write_bytes(b"corrupted")
+    path.write_text(json.dumps(detail, indent=2), encoding="utf-8")
+    whole, streamed = run_both_ways(monkeypatch, tmp_path, path, record, implementation)
+    assert not whole["passed"] and not streamed["passed"]
+    assert streamed["checks"] == whole["checks"]
+
+
+def test_streamed_verification_reports_a_file_without_summary_as_a_failed_row(monkeypatch, tmp_path):
+    path, record, implementation, detail = real_fixture(monkeypatch, tmp_path)
+    detail.pop("summary")
+    path.write_text(json.dumps(detail, indent=2), encoding="utf-8")
+    whole, streamed = run_both_ways(monkeypatch, tmp_path, path, record, implementation)
+    assert not whole["passed"] and not streamed["passed"] and streamed["errors"]
 
 
 def test_cache_requires_same_measurement_implementation_cohort_and_source_state(monkeypatch, tmp_path):

@@ -15,7 +15,7 @@ from .measurement import BATCH_DIRECTORY, RULES_VERSION as MEASUREMENT_RULES_VER
 from .risksets import RULES_VERSION as RISKSET_RULES_VERSION, compact_reference
 from .measurement_io import IO_RULES_VERSION, file_sha256, load_analysis_measurement
 
-RULES_VERSION = "opportunity-join-v4"
+RULES_VERSION = "opportunity-join-v5"
 FULL_VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)\Z")
 NUMERIC_VERSION = re.compile(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?\Z")
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")

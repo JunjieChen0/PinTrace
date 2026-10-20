@@ -11,17 +11,70 @@ from pathlib import Path
 import tomllib
 
 from .configuration import CONFIG_PATHS
+from decimal import Decimal
+
+import ijson
+from ijson.common import ObjectBuilder
+
 from .history import git
-from .measurement import BATCH_DIRECTORY, SOURCE_NAMES, confirmed_records, digest, fixed_history
-from .measurement import modification_commits, replay_detail, save, select_points
+from .lineage import reconstruct
+from .measurement import BATCH_DIRECTORY, SOURCE_NAMES, confirmed_records, fixed_history
+from .measurement import modification_commits, read_state, replay_detail, save, select_points, workflow_renames
+from .measurement import _CacheOnly
+from .measurement_io import sections
 
 
-RULES_VERSION = "full-measurement-verification-v3"
-VERIFICATION_DIRECTORY = "measurement-verification-v3"
+RULES_VERSION = "full-measurement-verification-v4"
+VERIFICATION_DIRECTORY = "measurement-verification-v4"
 REQUIRED_REFERENCE_FIELDS = ("comment_kind", "comment_identity_state", "comment_attachment_state",
                              "configuration_coverage", "configuration_complete", "configuration_snapshot_sha")
 UNFINISHED_COHORT = {"pending", "identity_pending", "collection_failed", "blob_unavailable"}
 COUNT_KEYS = ("known_entries", "known_exits", "unknown_entries", "unknown_exits")
+# json.loads of a file this large builds a text copy of the whole file first and exhausts memory. Above the limit the same
+# dictionary is built by the streaming parser; every check that follows is the unchanged one.
+LARGE_FILE_BYTES = 300 * 2**20
+# A file this large is verified alone after the worker pool has finished, so its memory is not added to the other workers'.
+HEAVY_FILE_BYTES = 2**30
+# A dictionary built from a file this large does not fit next to the re-read states of the replay (about 3.4 times the file
+# size for the parsed copy alone). Such a file is verified one snapshot at a time; the row it produces has the same fields.
+STREAM_VERIFY_BYTES = 3 * 2**30
+SNAPSHOT_KEYS_NEEDED_BY_LINEAGE = ("sha", "timestamp", "date", "complete", "references", "files", "renames", "rename_evidence")
+DETAIL_KEYS = {"summary", "snapshots", "implementation_sha256", "timeline", "lineages", "replay"}
+
+
+def digest(path):
+    """SHA-256 of a file read in chunks; the value equals that of measurement.digest without holding the file in memory."""
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def load_detail(path):
+    """The measurement file as a dictionary, equal to json.loads of its text for every size."""
+    path = Path(path)
+    if path.stat().st_size <= LARGE_FILE_BYTES:
+        return json.loads(path.read_text(encoding="utf-8"))
+    detail = dict(sections(path, DETAIL_KEYS))
+    if "summary" not in detail:
+        raise KeyError("summary")
+    return detail
+
+
+def read_summary(path):
+    """Only the leading summary object; the rest of the file is not read."""
+    stream = sections(path, {"summary"})
+    try:
+        for _, value in stream:
+            return value
+    finally:
+        stream.close()
+    raise KeyError("summary")
+
+
+def split_by_weight(paths):
+    """Ordinary files for the worker pool and heavy files for sequential verification after it."""
+    ordinary = [path for path in paths if path.stat().st_size <= HEAVY_FILE_BYTES]
+    heavy = sorted((path for path in paths if path.stat().st_size > HEAVY_FILE_BYTES), key=lambda path: path.stat().st_size)
+    return ordinary, heavy
 
 
 def _hash(value):
@@ -154,8 +207,12 @@ def _source_state(root, detail):
     """Cache invalidation covers ordinary raw-cache and Git object-store changes."""
     blobs = {item["blob"] for state in detail["snapshots"]
              for item in state["files"] + state["configuration_files"]}
+    return _source_state_of(root, detail["summary"]["git_directory"], blobs)
+
+
+def _source_state_of(root, git_directory, blobs):
     paths = [(root / "data/cache/blobs" / blob) for blob in sorted(blobs)]
-    objects = root / detail["summary"]["git_directory"] / "objects"
+    objects = root / git_directory / "objects"
     if objects.exists():
         for directory in sorted(objects.iterdir()):
             if directory.is_dir() and (directory.name == "pack" or len(directory.name) == 2):
@@ -170,14 +227,253 @@ def _source_state(root, detail):
     return _hash(records)
 
 
+STREAM_PREFIXES = {"summary", "snapshots.item", "implementation_sha256", "lineages.repository", "lineages.rules_version",
+                   "lineages.references.item", "lineages.events.item", "lineages.conservation", "lineages.quality"}
+_MISSING = object()
+_ACTION = {"kind": "action"}
+
+
+def _stored_items(path, prefixes, key_prefixes):
+    """measurement_io.sections plus ``(prefix + '.#key', name)`` for every key of the objects at ``key_prefixes``.
+
+    The key events let the streaming check see keys it was not told to expect, which a prefix filter would drop silently.
+    """
+    prefixes, builder, selected, depth = set(prefixes), None, None, 0
+    with Path(path).open("rb") as stream:
+        for prefix, event, value in ijson.parse(stream):
+            if builder is None:
+                if event == "map_key" and prefix in key_prefixes:
+                    yield prefix + ".#key", value
+                    continue
+                if prefix not in prefixes or event in {"map_key", "end_map", "end_array"}:
+                    continue
+                builder, selected = ObjectBuilder(), prefix
+            builder.event(event, float(value) if isinstance(value, Decimal) else value)
+            if event in {"start_map", "start_array"}:
+                depth += 1
+            elif event in {"end_map", "end_array"}:
+                depth -= 1
+            if depth == 0:
+                yield selected, builder.value
+                builder = None
+
+
+class _Stored:
+    """One pass over a stored measurement file shared by the snapshot replay and the later lineage comparison."""
+
+    def __init__(self, path):
+        self._items = _stored_items(path, STREAM_PREFIXES, {"lineages"})
+        self.pending = None
+
+    def next(self):
+        if self.pending is not None:
+            item, self.pending = self.pending, None
+            return item
+        return next(self._items, None)
+
+    def close(self):
+        self._items.close()
+
+
+class _Lazy:
+    """The part of a list that lineage.reconstruct uses (iteration, len and the last element), fed from a generator."""
+
+    def __init__(self, source):
+        self.source, self.last, self.count = source, None, 0
+
+    def __iter__(self):
+        for state in self.source:
+            self.last = state
+            self.count += 1
+            yield state
+
+    def __len__(self):
+        return self.count
+
+    def __getitem__(self, index):
+        if index == -1:
+            return self.last
+        raise IndexError(index)
+
+
+class _Facts:
+    """What the whole-file checks read from every stored snapshot, kept as small values."""
+
+    def __init__(self):
+        self.shas, self.stamps, self.complete, self.configuration_complete = [], [], [], []
+        self.inheritance_unknown, self.actions, self.objects = [], [], set()
+        self.tree_mismatches, self.mismatches, self.reference_missing, self.full_sha_observations = [], [], [], 0
+
+    def observe(self, state, directory):
+        self.shas.append(state["sha"])
+        self.stamps.append(state["timestamp"])
+        self.complete.append(state.get("complete"))
+        self.configuration_complete.append(state.get("configuration_complete"))
+        self.inheritance_unknown.append(state["configuration"].get("inheritance_unknown") is True)
+        self.actions.append(sum(ref.get("kind") == "action" for ref in state["references"]) if state.get("complete") is True else 0)
+        workflow, configuration = _tree_objects(directory, state["sha"])
+        if _objects(workflow) != _objects(state["files"]):
+            self.tree_mismatches.append(dict(commit=state["sha"], field="workflow_tree"))
+        if _objects(configuration) != _objects(state["configuration_files"]):
+            self.tree_mismatches.append(dict(commit=state["sha"], field="configuration_tree"))
+        fields = audit_reference_fields([state])
+        self.reference_missing.extend(fields["missing_fields"])
+        self.full_sha_observations += fields["full_sha_observations"]
+        self.objects.update((item["blob"], item["mode"], item["kind"]) for item in state["files"] + state["configuration_files"])
+
+
+def _replayed_states(stored, summary, directory, client, parsed, facts):
+    """Re-read every stored snapshot from Git and the blob cache, compare it, and hand the re-read state to the lineage rebuild."""
+    previous = None
+    while True:
+        item = stored.next()
+        if item is None:
+            return
+        prefix, expected = item
+        if prefix != "snapshots.item":
+            stored.pending = item
+            return
+        facts.observe(expected, directory)
+        try:
+            current = read_state(client, directory, summary["canonical_repository"], expected, summary["observed_default_branch"], parsed)
+            if previous is not None:
+                current["renames"], current["rename_evidence"] = workflow_renames(directory, previous, current)
+            else:
+                current.update(renames={}, rename_evidence=[])
+        except Exception as error:
+            facts.mismatches.append(dict(commit=expected["sha"], field="source_tree_or_rename_read",
+                                         error=type(error).__name__ + ": " + str(error)))
+            continue
+        for key in ("references", "complete", "configuration_complete", "configuration", "renames", "rename_evidence"):
+            if current[key] != expected[key]:
+                facts.mismatches.append(dict(commit=expected["sha"], field=key))
+        previous = current
+        yield current
+
+
+def _verify_streaming(root, path, expected_record, implementation, config, row, output):
+    """The checks of verify_one for a file too large to hold as a dictionary: one stored snapshot in memory at a time.
+
+    Only the lineage rebuilt from the re-read states is held completely. The stored lineage is compared with it item by item,
+    so a stored copy never exists. The cache is not consulted: a file of this size is checked once per run.
+    """
+    stored = _Stored(path)
+    try:
+        first = stored.next()
+        if first is None or first[0] != "summary":
+            raise KeyError("summary")
+        summary = first[1]
+        signature = dict(measurement_sha256=digest(path), implementation_sha256=implementation,
+                         verifier_sha256=digest(Path(__file__)), expected_cohort_record_sha256=expected_record["cohort_record_sha256"])
+    except Exception as error:
+        stored.close()
+        row.update(passed=False, errors=[type(error).__name__ + ": " + str(error)])
+        save(output, row)
+        return row
+    try:
+        facts, client, parsed = _Facts(), _CacheOnly(root), {}
+        directory = root / expected_record["git_directory"]
+        lazy = _Lazy(_replayed_states(stored, summary, directory, client, parsed, facts))
+        rebuilt = reconstruct(summary["canonical_repository"], lazy)
+        stored_implementation, stored_keys, counts = None, set(), dict(references=0, events=0)
+        same = dict(references=True, events=True)
+        seen = dict(repository=_MISSING, rules_version=_MISSING, conservation=_MISSING, quality=_MISSING)
+        ambiguous_commits, unknown_boundary_events = set(), 0
+        while True:
+            item = stored.next()
+            if item is None:
+                break
+            prefix, value = item
+            if prefix == "snapshots.item":
+                raise ValueError("Unexpected measurement section order")
+            if prefix == "implementation_sha256":
+                stored_implementation = value
+            elif prefix == "lineages.#key":
+                stored_keys.add(value)
+            elif prefix in ("lineages.references.item", "lineages.events.item"):
+                name = prefix.split(".")[1]
+                rows = rebuilt[name]
+                same[name] = same[name] and counts[name] < len(rows) and rows[counts[name]] == value
+                counts[name] += 1
+                if name == "events":
+                    ambiguous_commits.update([value["commit"]] if value["event"] == "ambiguous_transition" else [])
+                    unknown_boundary_events += value["event"] == "unknown_boundary"
+            else:
+                seen[prefix.split(".")[1]] = value
+        if not stored_keys:
+            raise KeyError("lineages")
+        lineage_equal = (stored_keys == set(rebuilt) and same["references"] and same["events"]
+                         and counts["references"] == len(rebuilt["references"]) and counts["events"] == len(rebuilt["events"])
+                         and all(seen[name] is not _MISSING and seen[name] == rebuilt[name] for name in seen))
+        stored_conservation = {} if seen["conservation"] is _MISSING else seen["conservation"]
+        row["checks"]["implementation_hashes_equal"] = stored_implementation == implementation
+        identity_fields = ("repository_id", "baseline_commit", "observed_head", "git_directory", "cohort_record_sha256")
+        row["checks"]["frozen_cohort_input_equal"] = all(summary.get(key) == expected_record.get(key) for key in identity_fields)
+        row["checks"]["alias_baselines_consistent"] = not expected_record.get("alias_baseline_conflict", False)
+        history = fixed_history(directory, expected_record["observed_head"])
+        workflows = modification_commits(directory, expected_record["observed_head"], (".github/workflows",))
+        configurations = modification_commits(directory, expected_record["observed_head"], CONFIG_PATHS)
+        expected_points, timeline = select_points(history, workflows, configurations, config, expected_record["baseline_commit"])
+        row["checks"]["snapshot_topology_and_scope_equal"] = [point["sha"] for point in expected_points] == facts.shas
+        expected_clocks = {point["sha"]: point["timestamp"] for point in expected_points}
+        row["checks"]["snapshot_clocks_equal"] = all(expected_clocks.get(sha) == stamp for sha, stamp in zip(facts.shas, facts.stamps))
+        row["configuration_only_commits"] = timeline["configuration_only_commits"]
+        row["missing_configuration_commits"] = sorted(set(timeline["required_configuration_commits"]) - set(facts.shas))
+        row["checks"]["all_configuration_changes_present"] = not row["missing_configuration_commits"]
+        row["tree_mismatches"] = facts.tree_mismatches
+        row["checks"]["tree_file_objects_equal"] = not facts.tree_mismatches
+        if expected_record.get("baseline_tree"):
+            actual_tree = git(directory, "rev-parse", expected_record["baseline_commit"] + "^{tree}").decode().strip()
+            row["checks"]["cohort_baseline_tree_equal"] = actual_tree == expected_record["baseline_tree"]
+        light = [dict(sha=sha, complete=complete, references=[_ACTION] * count)
+                 for sha, complete, count in zip(facts.shas, facts.complete, facts.actions)]
+        row["conservation"] = audit_conservation(dict(conservation=stored_conservation), light)
+        row["reference_fields"] = dict(passed=not facts.reference_missing, full_sha_observations=facts.full_sha_observations,
+                                       missing_fields=facts.reference_missing)
+        required = {blob for blob, mode, kind in facts.objects if kind == "blob" and mode in ("100644", "100755")}
+        verified = set()
+        for blob in required:
+            try:
+                content = client.blob(None, None, None, blob)
+                if hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest() == blob:
+                    verified.add(blob)
+            except OSError:
+                pass
+        row["replay"] = dict(required_blob_objects=len(required), verified_blob_objects=len(verified),
+                             missing_or_mismatched_blobs=sorted(required - verified), source_states_checked=lazy.count,
+                             state_mismatches=facts.mismatches, lineage_replay_equal=lineage_equal,
+                             passed=required == verified and not facts.mismatches and lineage_equal,
+                             semantics="Offline implementation replay consistency; not behavioral classification accuracy")
+        row["checks"].update(conservation=row["conservation"]["passed"], reference_fields=row["reference_fields"]["passed"],
+                               raw_source_and_lineage_replay=row["replay"]["passed"])
+        complete_pairs = sum(a is True and b is True for a, b in zip(facts.complete, facts.complete[1:]))
+        row["quality"] = dict(snapshots=len(facts.shas), workflow_unknown_snapshots=sum(value is not True for value in facts.complete),
+                              configuration_unknown_snapshots=sum(value is not True for value in facts.configuration_complete),
+                              inheritance_unknown_snapshots=sum(facts.inheritance_unknown),
+                              complete_adjacent_intervals=complete_pairs, ambiguous_intervals=len(ambiguous_commits),
+                              unknown_boundary_events=unknown_boundary_events,
+                              **{key: row["conservation"][key] for key in ("unknown_entries", "unknown_exits")})
+        signature["source_object_state_sha256"] = _source_state_of(root, summary["git_directory"], {blob for blob, _, _ in facts.objects})
+    except Exception as error:
+        row["errors"].append(type(error).__name__ + ": " + str(error))
+    finally:
+        stored.close()
+    row["passed"] = bool(row["checks"]) and all(row["checks"].values()) and not row["errors"]
+    row["cache_signature"] = signature
+    save(output, row)
+    return row
+
+
 def verify_one(root, path, expected_record, implementation, config):
     identity = expected_record["repository_id"]
     output = root / "data/derived" / VERIFICATION_DIRECTORY / (identity + ".json")
     row = dict(repository_id=identity, repository=expected_record["canonical_repository"],
                rules_version=RULES_VERSION, checked_at_utc=datetime.now(timezone.utc).isoformat(),
                measurement_path=path.relative_to(root).as_posix(), cache_used=False, checks={}, errors=[])
+    if path.stat().st_size > STREAM_VERIFY_BYTES:
+        return _verify_streaming(root, path, expected_record, implementation, config, row, output)
     try:
-        detail = json.loads(path.read_text(encoding="utf-8"))
+        detail = load_detail(path)
         signature = dict(measurement_sha256=digest(path), implementation_sha256=implementation,
                          verifier_sha256=digest(Path(__file__)), expected_cohort_record_sha256=expected_record["cohort_record_sha256"],
                          source_object_state_sha256=_source_state(root, detail))
@@ -338,7 +634,7 @@ def main():
     measurements, errors = [], []
     for path in paths:
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))["summary"]
+            record = read_summary(path)
             if record["repository_id"] != path.stem:
                 errors.append("measurement_filename_identity_mismatch:" + path.name)
             measurements.append(record)
@@ -358,14 +654,19 @@ def main():
             input_paths.append(root / name)
     input_hashes = {path.relative_to(root).as_posix(): digest(path) for path in input_paths}
     jobs = [path for path in paths if path.stem in expected]
+    ordinary, heavy = split_by_weight(jobs)
     checks = []
     write_report(root, make_report(scope, checks, input_errors=errors, baseline_verification=baseline), checks)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(verify_one, root, path, expected[path.stem], implementation, config) for path in jobs]
+        futures = [pool.submit(verify_one, root, path, expected[path.stem], implementation, config) for path in ordinary]
         for future in as_completed(futures):
             row = future.result()
             checks.append(row)
             print(f"{len(checks)}/{len(jobs)} {row['repository']} {'passed' if row['passed'] else 'failed'}", flush=True)
+    for path in heavy:
+        row = verify_one(root, path, expected[path.stem], implementation, config)
+        checks.append(row)
+        print(f"{len(checks)}/{len(jobs)} {row['repository']} {'passed' if row['passed'] else 'failed'} (checked alone)", flush=True)
     if implementation_hashes(root) != implementation:
         errors.append("frozen_implementation_changed_during_verification")
     for name, expected_hash in input_hashes.items():

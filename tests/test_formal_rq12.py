@@ -25,7 +25,7 @@ def state(day, refs=(), complete=True, name=None):
 def detail(*states, identity="1", covers=True, baseline=None):
     baseline = baseline or next(s["sha"] for s in reversed(states) if s["timestamp"] < ANCHOR)
     return dict(summary=dict(repository_id=identity, canonical_repository="owner/repo" + identity,
-                            status="measured", measurement_rules_version="measurement-v3",
+                            status="measured", measurement_rules_version="measurement-v4",
                             baseline_commit=baseline, endpoint_commit=states[-1]["sha"],
                             observed_ancestry_covers_end=covers),
                 snapshots=list(states), timeline=dict(endpoint_commit=states[-1]["sha"]),
@@ -437,7 +437,9 @@ def test_run_writes_new_batch_products_and_keeps_its_input_frozen(tmp_path, monk
     assert set(result) == {"rq1_summary", "rq2_summary"}
     assert result["rq1_summary"]["formal"]["first_response_counts"]["pin"] == 1
     assert result["rq1_summary"]["checks"]["formal_and_raw_partitions"]
-    assert result["rq1_summary"]["checks"]["formal455"] is False
+    # The authority declares no population sizes, so the size checks fail closed instead of passing vacuously.
+    assert result["rq1_summary"]["checks"]["formal_population"] is False
+    assert result["rq1_summary"]["checks"]["raw_population"] is False
     assert len(context["rq12_records"]) == 1
     assert context["rq12_target_measurements"][0] is context["rq12_records"][0]["target_measurement"]
     assert source.read_text(encoding="utf-8") == json.dumps(original)
