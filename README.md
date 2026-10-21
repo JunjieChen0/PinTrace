@@ -6,7 +6,7 @@
 
 作者：陈俊杰（Junjie Chen），南京理工大学计算机科学与工程学院。ORCID：[0009-0002-3499-3621](https://orcid.org/0009-0002-3499-3621)。
 
-论文正在准备 IEEE Transactions on Software Engineering 投稿。复现数据与结果归档于 Zenodo，DOI：[10.5281/zenodo.23523854](https://doi.org/10.5281/zenodo.23523854)（当前版本 1.1）；本仓库只包含源码、测试与研究配置，不包含原始测量、报告、论文或数据缓存。
+论文按 Journal of Software: Evolution and Process（Wiley）准备投稿版本（`paper/jsep/`）；另有 IEEE 双栏版本保留在 `paper/latex/`。复现数据与结果归档于 Zenodo，概念 DOI：[10.5281/zenodo.23523854](https://doi.org/10.5281/zenodo.23523854)（解析到最新版本）；本仓库只包含源码、测试与研究配置，不包含原始测量、报告、论文或数据缓存。
 
 ## 内容
 
