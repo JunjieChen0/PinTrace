@@ -25,17 +25,18 @@ import re
 from .formal_common import FROZEN_MANIFEST, REPLICATES, SEED, WORKING_MANIFEST, sha256, write_json
 from .formal_rq12 import describe_repository
 
-RULE_VERSION = "formal-extensions-v1"
+RULE_VERSION = "formal-extensions-v2"
 DAY = 86400
 BIN_DAYS = 30
-PRE_BINS, POST_BINS = 6, 12
+PRE_BINS, POST_BINS = 6, 18
 BINS = tuple(range(-PRE_BINS, POST_BINS))
 PER = 100  # rates are events per 100 mutable-reference 30-day periods
 PATCHED = (46, 0, 1)  # first patched version in GHSA-mrrh-fwg8-r2c3
 COMPROMISED = "0e58ed8671d6b60d0890c21b07f8835ace038e67"
 KINDS = ("pin", "remove", "mutable_update")
 PERIODS = {"pre": range(-6, 0), "post_0_30": range(0, 1), "post_30_90": range(1, 3), "post_90_180": range(3, 6),
-           "post_180_360": range(6, 12), "post_30_360": range(1, 12), "post_0_360": range(0, 12)}
+           "post_180_360": range(6, 12), "post_360_540": range(12, 18), "post_180_540": range(6, 18),
+           "post_30_360": range(1, 12), "post_0_360": range(0, 12), "post_0_540": range(0, 18)}
 TRAJECTORY_DAYS = (0, 7, 30, 90, 180, 365)
 LEAVE_OUT = (1, 5, 10)
 RUN = "data/derived/formal-stats-v1/runs/20261018T155426854985Z/manifest.json"
@@ -209,6 +210,51 @@ def new_identity_summary(included, clustered_ids):
     return output
 
 
+def late_wave(records, ids, bins=range(12, 18)):
+    """Conversions in months 13--18, with commit-level concentration and entry context.
+
+    The rate counts references; a repository that pins many references in one
+    commit contributes many events. Reporting the commit count alongside the
+    event count keeps that distinction visible.
+    """
+    commits, repositories, actions, dates = Counter(), Counter(), Counter(), []
+    comments, configurations = Counter(), Counter()
+    for record in records:
+        if record["repository_id"] not in ids or not record["clock_aligned"]:
+            continue
+        anchor, width, end_index, snapshots = record["anchor"], BIN_DAYS * DAY, record["endpoint_index"], record["snapshots"]
+        observed_end = _observed_end(record)
+        for event in record["events"]:
+            before, after, i = event.get("before"), event.get("after"), event["index"]
+            if event["event"] != "pin" or not isinstance(before, dict) or before.get("ref_type") == "full_sha":
+                continue
+            if before.get("action") == record["target_action"]:
+                continue
+            if not 1 <= i <= end_index or snapshots[i - 1]["complete"] is not True or snapshots[i]["complete"] is not True:
+                continue
+            b = math.floor((event["timestamp"] - anchor) / width)
+            if b not in bins or event["timestamp"] > observed_end:
+                continue
+            commits[(record["repository"], i)] += 1
+            repositories[record["repository"]] += 1
+            actions[before.get("action")] += 1
+            dates.append(event["timestamp"])
+            comments[(after or {}).get("comment_attachment_state")] += 1
+            configurations[((after or {}).get("configuration_coverage") or {}).get("status")] += 1
+    total = sum(commits.values())
+    top = commits.most_common(10)
+    bulk = {identity: count for identity, count in commits.items() if count >= 20}
+    return dict(events=total, commits=len(commits), repositories=len(repositories),
+                top10_commit_share=sum(v for _, v in top) / total if total else None,
+                top10_commits=[dict(repository=identity[0], snapshot_index=identity[1], conversions=v) for identity, v in top],
+                bulk_commits=len(bulk), bulk_events=sum(bulk.values()),
+                bulk_event_share=sum(bulk.values()) / total if total else None,
+                first_event_date=datetime.fromtimestamp(min(dates), timezone.utc).date().isoformat() if dates else None,
+                last_event_date=datetime.fromtimestamp(max(dates), timezone.utc).date().isoformat() if dates else None,
+                comments=dict(comments.most_common()), configurations=dict(configurations.most_common()),
+                top_actions=[dict(action=action, conversions=count) for action, count in actions.most_common(5)])
+
+
 def interrupted_series(records, ids):
     """Pooled rates, rate ratios, excess conversions and a placebo anchor."""
     included = [record for record in records if record["repository_id"] in ids and record["clock_aligned"]]
@@ -271,6 +317,7 @@ def interrupted_series(records, ids):
     result["concentration"] = concentration(series)
     result["update_waves"] = update_concentration(records, ids)
     result["new_identity"] = new_identity_summary(included, series)
+    result["late_wave"] = late_wave(records, ids)
     result["interpretation"] = ("The cohort's own pre-incident 180 days supply the comparison rate. Ratios compare pooled rates; "
                                 "placebo months compare each pre-incident month with the other five.")
     return result

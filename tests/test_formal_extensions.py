@@ -1,6 +1,6 @@
 import pytest
 
-from pintrace.formal_extensions import (BINS, Clustered, compromised_pins, pick_release_tag, adopted_route, advisory_line, concentration, conversion_series,
+from pintrace.formal_extensions import (BINS, Clustered, compromised_pins, pick_release_tag, adopted_route, advisory_line, concentration, conversion_series, late_wave,
                                         interrupted_series, new_identity_series, new_identity_summary, ref_line, sha_line,
                                         target_lines_at, trajectory_state, update_concentration, version_key)
 
@@ -32,6 +32,21 @@ def record(snapshots, events, *, identity="1", end=100, aligned=True, references
 
 def event(kind, index, days, before, after):
     return dict(event=kind, index=index, timestamp=ANCHOR + days * DAY, commit="c%d" % index, before=before, after=after)
+
+
+def test_late_wave_counts_commits_and_excludes_the_target_action():
+    snapshots = [state("s0", -10, other_mutable=5), state("s1", 400, other_mutable=0)]
+    after = dict(action="actions/checkout", ref=NEW, ref_type="full_sha", comment_attachment_state="attached",
+                 configuration_coverage={"status": "covered"})
+    events = [event("pin", 1, 400, ref("actions/checkout", "v4", "mutable_or_unresolved"), after),
+              event("pin", 1, 400, ref("actions/cache", "v4", "mutable_or_unresolved"), dict(after, action="actions/cache")),
+              event("pin", 1, 400, ref("tj-actions/changed-files", "v45", "mutable_or_unresolved"), dict(after, action="tj-actions/changed-files"))]
+    result = late_wave([record(snapshots, events, end=500)], {"1"})
+    assert result["events"] == 2 and result["commits"] == 1 and result["repositories"] == 1
+    assert result["top10_commit_share"] == 1.0 and result["bulk_commits"] == 0
+    assert result["first_event_date"] == result["last_event_date"]
+    assert result["comments"] == {"attached": 2}
+    assert result["configurations"] == {"covered": 2}
 
 
 def test_versions_are_classified_against_the_first_patched_release():
