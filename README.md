@@ -1,6 +1,6 @@
 # PinTrace
 
-**After the Pulse: SHA Pinning in GitHub Actions Workflows Following the tj-actions/changed-files Compromise**
+**Two Waves: SHA Pinning in GitHub Actions Workflows Following the tj-actions/changed-files Compromise**
 
 研究 GitHub Actions 供应链事件之后 SHA 固定的研究代码。项目重建仓库默认分支的历史，测量每一条外部 `uses:` 引用及其变化，比较事故前后的事故基线，并分析响应对象、扩展范围与固定期的持续性。
 
