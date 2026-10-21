@@ -456,6 +456,58 @@ def check_manuscript(root, output, context, evidence, documents):
     evidence.check("S4", "published paper and reports equal staged artifacts", all(sha256(a) == sha256(b) for a, b in published), [path for pair in published for path in pair])
 
 
+def check_additions(root, output, context, evidence):
+    """The analyses added after the formal run and the validity reports must exist, pass, and share one run."""
+    from .formal_extensions import latest_working_run
+
+    added = ("formal_activity", "formal_competing_risks", "formal_placebo", "formal_sensitivity")
+    validity = ("validity_golden", "validity_reexport", "validity_goldset")
+    paths = {name: root / "reports" / (name + ".json") for name in added + validity}
+    missing = [name for name, path in paths.items() if not path.is_file()]
+    evidence.check("S3", "added analyses and validity reports exist", not missing, list(paths.values()), dict(missing=missing))
+    if missing:
+        return
+    reports = {name: evidence.load(path) for name, path in paths.items()}
+    own = {name: bool(report.get("checks")) and all(report["checks"].values()) for name, report in reports.items()}
+    evidence.check("S3", "each added report passes its own checks", all(own.values()), list(paths.values()), own)
+    try:
+        latest_working_run(root)
+    except ValueError:
+        pass
+    sources = {name: reports[name].get("source_run") for name in added}
+    shared = len(set(sources.values())) == 1 and None not in sources.values() and (root / next(iter(sources.values()))).exists()
+    evidence.check("S3", "the four added analyses share one completed run", shared, list(paths.values()),
+                   dict(sources=sources))
+    digest = sha256(manifest_file(root, context))
+    bound = all(reports[name].get("input_sha256", {}).get("reports/working_input_manifest.json") == digest for name in added)
+    evidence.check("S4", "added analyses bind the active working-input manifest", bound, list(paths.values()))
+    gold = reports["validity_goldset"]
+    evidence.check("S4", "gold set covers 150 distinct items in every stratum and was labelled twice",
+                   gold["overall"]["round1_vs_pipeline"]["items"] == 150 and not gold["design"]["shortfall"]
+                   and gold["overall"]["round1_vs_round2"]["rate"] is not None
+                   and gold["protocol"]["interval_minutes"] is not None, [paths["validity_goldset"]])
+    reexport = reports["validity_reexport"]["measurement"]
+    evidence.check("S4", "byte-identical re-export covers a non-empty sample", bool(reexport["sample"]) and bool(reexport["snapshots_reexported"]),
+                   [paths["validity_reexport"]])
+    golden = reports["validity_golden"]["cases"]
+    evidence.check("S4", "golden suite has no failing case and every mutant is caught",
+                   not golden["failed"] and golden["passed"] == golden["scenarios"] + golden["parser"]
+                   and all(m["killed"] for m in reports["validity_golden"]["mutants"].values()), [paths["validity_golden"]])
+    paper = root / "paper/latex"
+    ledger_path, source, resolved = paper / "claim_ledger.json", paper / "main.src.tex", paper / "main.tex"
+    if ledger_path.is_file() and source.is_file() and resolved.is_file():
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        tokens = set(re.findall(r"<<([A-Za-z0-9_]+)>>", source.read_text(encoding="utf-8")))
+        claims = {claim["key"]: claim["rendered"] for claim in ledger["claims"]}
+        # Not bound: the paper is rebuilt from the reports after this run, so binding it here would go stale.
+        evidence.check("S4", "LaTeX manuscript resolves every token and matches its claim ledger",
+                       bool(tokens) and tokens <= set(claims) and b"<<" not in resolved.read_bytes()
+                       and sha256(resolved) == ledger["resolved"]["sha256"] and sha256(source) == ledger["source"]["sha256"],
+                       [ledger_path, source, resolved], dict(tokens=len(tokens), claims=len(claims)))
+    else:
+        evidence.check("S4", "LaTeX manuscript and its claim ledger exist", False, [ledger_path, source, resolved])
+
+
 def run(root, output_dir, context):
     root, output = Path(root).resolve(), Path(output_dir).resolve()
     require_context(root, context, inputs=("study.toml", "reports/risksets.csv"))
@@ -476,9 +528,14 @@ def run(root, output_dir, context):
                 action(root, output, context, evidence, documents) if section != "S3" else action(output, context, evidence, documents)
             except (OSError, KeyError, TypeError, ValueError, IndexError) as error:
                 evidence.check(section, "required actual evidence resolves", False, [], repr(error))
+        try:
+            check_additions(root, output, context, evidence)
+        except (OSError, KeyError, TypeError, ValueError, IndexError) as error:
+            evidence.check("S3", "added analyses and validity reports resolve", False, [], repr(error))
     evidence.check("S4", "all bound evidence remains unchanged", all(sha256(root / path) == digest for path, digest in evidence.inputs.items()), [])
     sources = {"pintrace/" + name + ".py": sha256(root / "pintrace" / (name + ".py")) for name in
-               ("formal_acceptance", "formal_common", "formal_stats", "formal_rq12", "formal_rq3", "formal_robustness", "formal_figures", "formal_manuscript")}
+               ("formal_acceptance", "formal_common", "formal_stats", "formal_rq12", "formal_rq3", "formal_robustness", "formal_figures", "formal_manuscript",
+                "formal_activity", "formal_competing", "formal_placebo", "formal_sensitivity", "validity_golden", "validity_reexport", "validity_goldset")}
     report = dict(rule_version=RULES_VERSION, acceptance_passed=all(row["passed"] for row in evidence.checks),
         requirements={section: dict(passed=any(r["section"] == section for r in evidence.checks) and all(r["passed"] for r in evidence.checks if r["section"] == section),
             checks=sum(r["section"] == section for r in evidence.checks)) for section in ("S1", "S2", "S3", "S4")},

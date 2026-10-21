@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from .formal_common import sha256, verify_frozen_inputs, write_json
 
 TARGET = "reports/supplement_freeze_manifest.json"
-PAPER = "paper/latex-v2"
+PAPER = "paper/latex"
 EXTENSIONS = "reports/formal_extensions.json"
 EXTENSION_RUNS = "data/derived/formal-stats-v2/runs"
 TEST_RUNS = "data/derived/formal-stats-v2/test-runs"

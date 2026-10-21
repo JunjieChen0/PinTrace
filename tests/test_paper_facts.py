@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-PAPER = Path(__file__).resolve().parents[1] / "paper" / "latex-v2"
+PAPER = Path(__file__).resolve().parents[1] / "paper" / "latex"
 TOKEN = re.compile(r"<<([A-Za-z0-9_]+)>>")
 
 

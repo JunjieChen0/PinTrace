@@ -363,7 +363,8 @@ def test_run_missing_real_outputs_writes_failure_report_and_raises(tmp_path):
     (root / "pintrace").mkdir()
     (root / "study.toml").write_text('[study]\nwindow_end="2026-03-03T00:00:00Z"\n', encoding="utf-8")
     (root / "reports/risksets.csv").write_text("row_kind\n", encoding="utf-8")
-    for name in ("formal_acceptance", "formal_common", "formal_stats", "formal_rq12", "formal_rq3", "formal_robustness", "formal_figures", "formal_manuscript"):
+    for name in ("formal_acceptance", "formal_common", "formal_stats", "formal_rq12", "formal_rq3", "formal_robustness", "formal_figures", "formal_manuscript",
+                 "formal_activity", "formal_competing", "formal_placebo", "formal_sensitivity", "validity_golden", "validity_reexport", "validity_goldset"):
         (root / "pintrace" / (name + ".py")).write_text("fixture source\n", encoding="utf-8")
     write_json(root / "reports/freeze_manifest.json", dict(status="frozen", formal_population=dict(
         formal_eligible_repository_ids=["1"], raw_confirmed_repository_ids=["1"]),
