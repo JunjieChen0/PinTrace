@@ -6,7 +6,7 @@
 
 作者：陈俊杰（Junjie Chen），南京理工大学计算机科学与工程学院。ORCID：[0009-0002-3499-3621](https://orcid.org/0009-0002-3499-3621)。
 
-论文正在准备 IEEE Transactions on Software Engineering 投稿。复现数据与结果归档于 Zenodo，DOI 见论文的 Data and Code Availability 一节；本仓库只包含源码、测试与研究配置，不包含原始测量、报告、论文或数据缓存。
+论文正在准备 IEEE Transactions on Software Engineering 投稿。复现数据与结果归档于 Zenodo，DOI：[10.5281/zenodo.23523855](https://doi.org/10.5281/zenodo.23523855)；本仓库只包含源码、测试与研究配置，不包含原始测量、报告、论文或数据缓存。
 
 ## 内容
 
@@ -69,6 +69,6 @@ python -m pintrace.validity_reexport
 
 Zenodo 归档包含正式结果文件、测量快照、上游证据、匹配对照、150 项金标集、论文源与 `claim_ledger.json`。归档内的 `README_DATA.md` 列出文件、校验值与解压后的目录布局；把测量目录放回 `data/derived/` 后即可按上面的顺序重算。源码仓库本身不能在空克隆上重建论文结果。
 
-## 数据许可
+## 许可
 
-Zenodo 数据归档使用 CC BY 4.0。源码的许可条件由作者另行确定。
+源码使用 [MIT License](LICENSE)。Zenodo 数据归档使用 CC BY 4.0。
