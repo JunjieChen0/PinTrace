@@ -219,6 +219,24 @@ def late_wave(records, ids, bins=range(12, 18)):
     """
     commits, repositories, actions, dates = Counter(), Counter(), Counter(), []
     comments, configurations = Counter(), Counter()
+    early, early_target, target_events = set(), 0, 0
+    for record in records:
+        if record["repository_id"] not in ids or not record["clock_aligned"]:
+            continue
+        anchor, width, end_index, snapshots = record["anchor"], BIN_DAYS * DAY, record["endpoint_index"], record["snapshots"]
+        observed_end = _observed_end(record)
+        for event in record["events"]:
+            before, i = event.get("before"), event["index"]
+            if event["event"] != "pin" or not isinstance(before, dict) or before.get("ref_type") == "full_sha":
+                continue
+            if not 1 <= i <= end_index or snapshots[i - 1]["complete"] is not True or snapshots[i]["complete"] is not True:
+                continue
+            b = math.floor((event["timestamp"] - anchor) / width)
+            if 0 <= b < 3 and event["timestamp"] <= observed_end:
+                if before.get("action") == record["target_action"]:
+                    early_target += 1
+                else:
+                    early.add(record["repository"])
     for record in records:
         if record["repository_id"] not in ids or not record["clock_aligned"]:
             continue
@@ -228,12 +246,13 @@ def late_wave(records, ids, bins=range(12, 18)):
             before, after, i = event.get("before"), event.get("after"), event["index"]
             if event["event"] != "pin" or not isinstance(before, dict) or before.get("ref_type") == "full_sha":
                 continue
-            if before.get("action") == record["target_action"]:
-                continue
             if not 1 <= i <= end_index or snapshots[i - 1]["complete"] is not True or snapshots[i]["complete"] is not True:
                 continue
             b = math.floor((event["timestamp"] - anchor) / width)
             if b not in bins or event["timestamp"] > observed_end:
+                continue
+            if before.get("action") == record["target_action"]:
+                target_events += 1
                 continue
             commits[(record["repository"], i)] += 1
             repositories[record["repository"]] += 1
@@ -244,11 +263,18 @@ def late_wave(records, ids, bins=range(12, 18)):
     total = sum(commits.values())
     top = commits.most_common(10)
     bulk = {identity: count for identity, count in commits.items() if count >= 20}
+    sizes = sorted(commits.values())
+    median = (sizes[len(sizes) // 2] if len(sizes) % 2
+              else (sizes[len(sizes) // 2 - 1] + sizes[len(sizes) // 2]) / 2) if sizes else None
     return dict(events=total, commits=len(commits), repositories=len(repositories),
+                median_conversions_per_commit=median, largest_commit=top[0][1] if top else None,
                 top10_commit_share=sum(v for _, v in top) / total if total else None,
                 top10_commits=[dict(repository=identity[0], snapshot_index=identity[1], conversions=v) for identity, v in top],
                 bulk_commits=len(bulk), bulk_events=sum(bulk.values()),
                 bulk_event_share=sum(bulk.values()) / total if total else None,
+                target_conversions=target_events,
+                repositories_converting_first_quarter=len(set(repositories) & early),
+                first_quarter_share=len(set(repositories) & early) / len(repositories) if repositories else None,
                 first_event_date=datetime.fromtimestamp(min(dates), timezone.utc).date().isoformat() if dates else None,
                 last_event_date=datetime.fromtimestamp(max(dates), timezone.utc).date().isoformat() if dates else None,
                 comments=dict(comments.most_common()), configurations=dict(configurations.most_common()),
@@ -309,6 +335,8 @@ def interrupted_series(records, ids):
                                    for name, bins in PERIODS.items() if name != "pre"}
         result["repository_share"][scope] = {name: clustered.evaluate(share(scope, bins), n) for name, bins in PERIODS.items()}
         result["repository_share"][scope]["ratio.post_0_30"] = clustered.evaluate(share_ratio(scope, PERIODS["post_0_30"], PERIODS["pre"]), n)
+        for late in ("post_180_360", "post_360_540"):
+            result["repository_share"][scope]["ratio." + late] = clustered.evaluate(share_ratio(scope, PERIODS[late], PERIODS["pre"]), n)
         # Placebo months: each pre-incident month against the remaining five.
         result["placebo"][scope] = [dict(bin=b, start_day=b * BIN_DAYS,
                                          pin_ratio=clustered.evaluate(ratio(scope, "pin", (b,), [p for p in PERIODS["pre"] if p != b]), n),
