@@ -347,7 +347,8 @@ def run(root, round1, round2, base=BASE, interval_minutes=None):
         design=dict(strata=build_record["strata"], chosen=build_record["chosen"], candidates=build_record["candidates"], shortfall=build_record["shortfall"],
                     salt=build_record["salt"], pipeline_label_counts=build_record["pipeline_label_counts"],
                     sampling="hash-ranked within each error-prone stratum; not a uniform random sample of the corpus"),
-        protocol=dict(labellers="one model, two independent contexts", round1="working context, immediately after the packet was built",
+        protocol=dict(labellers="one model (Qoder Desktop; DeepSeek v4.1 flash; accessed October 2026), two independent contexts",
+                      round1="working context, immediately after the packet was built",
                       round2="fresh context given only the reshuffled packet, without the answer key or round-one labels",
                       interval_minutes=interval_minutes,
                       interval_note="The interval is the wall-clock gap between the two label files. Independence of round two comes "
