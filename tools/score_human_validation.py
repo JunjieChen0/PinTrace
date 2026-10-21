@@ -34,11 +34,12 @@ def main() -> int:
         print("no answers yet; fill the answer column in reports/human_validation/answers.csv")
         return 0
 
-    pairs, model_pairs, rows = [], [], []
+    pairs, model_pairs, rows, sources = [], [], [], set()
     for row in answers:
         identifier = row["id"]
         human = row["answer"].strip()
         pipeline = key[identifier]["pipeline"]
+        sources.add(row.get("label_source", "").strip())
         model = labels.get(identifier)
         model = model.get("label") if isinstance(model, dict) else model
         pairs.append((human, pipeline))
@@ -47,7 +48,10 @@ def main() -> int:
         rows.append(dict(id=identifier, task=row["task"], human=human, pipeline=pipeline, model=model, note=row["note"]))
 
     report = dict(
-        answered=len(answers), sampled=len(key),
+        answered=len(answers), sampled=len(key), label_sources=sorted(s for s in sources if s),
+        by_task={task: dict(items=sum(1 for r in rows if r["task"] == task),
+                            agree=sum(1 for r in rows if r["task"] == task and r["human"] == r["pipeline"]))
+                 for task in sorted({r["task"] for r in rows})},
         agreement_with_pipeline=sum(a == b for a, b in pairs) / len(pairs),
         kappa_with_pipeline=kappa(pairs),
         agreement_with_model=sum(a == b for a, b in model_pairs) / len(model_pairs) if model_pairs else None,
