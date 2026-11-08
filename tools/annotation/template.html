@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #5d6677; --line: #dde1e8;
+  --accent: #2f5bd3; --accent-ink: #ffffff; --accent-soft: #e6ecfb;
+  --ok: #1f7a4d; --warn: #b4531a; --focus-bg: #fff4c2; --add-bg: #e5f5ea; --del-bg: #fbe6e6; --hunk: #6a52b8;
+  --code-bg: #f3f4f7;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171d; --panel: #1c2028; --ink: #e6e9ef; --muted: #9aa3b4; --line: #2e3440;
+    --accent: #7c9cf5; --accent-ink: #0d1220; --accent-soft: #263152;
+    --ok: #5cc68f; --warn: #f0a46c; --focus-bg: #4a4017; --add-bg: #173323; --del-bg: #3d1d1d; --hunk: #b6a4f2;
+    --code-bg: #232833;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+header h1 { font-size: 16px; margin: 0; }
+.progress { flex: 1 1 220px; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.bar { flex: 1; height: 8px; background: var(--code-bg); border-radius: 4px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--ok); width: 0; transition: width .2s; }
+.tools { display: flex; gap: 8px; flex-wrap: wrap; }
+button, .btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.banner { margin: 12px 16px 0; padding: 10px 14px; border-radius: 6px; background: var(--accent-soft); font-size: 14px; }
+.banner.warn { background: var(--del-bg); }
+.layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+nav { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; height: calc(100vh - 110px); position: sticky; top: 76px; overflow: auto; }
+nav .filters { display: flex; gap: 6px; margin-bottom: 8px; font-size: 13px; }
+nav .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+nav .grid button { padding: 3px 0; font-size: 12px; border-radius: 4px; }
+nav .grid button.done { background: var(--add-bg); border-color: var(--ok); }
+nav .grid button.unsure { background: var(--focus-bg); }
+nav .grid button.current { outline: 2px solid var(--accent); }
+main { min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
+.item-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+.item-head .no { font-size: 20px; font-weight: 700; }
+.muted { color: var(--muted); font-size: 13px; }
+.question { font-size: 16px; font-weight: 600; margin: 8px 0 4px; }
+a { color: var(--accent); }
+.sides { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+.sides.single { grid-template-columns: 1fr; }
+.sides > *, .diffs, details.diff { min-width: 0; }
+.side h3, .diffs h3 { font-size: 14px; margin: 0 0 8px; color: var(--muted); }
+.ref { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; }
+.ref .value { font-family: var(--mono); font-size: 13.5px; word-break: break-all; font-weight: 600; }
+.ref .meta { font-size: 12.5px; color: var(--muted); }
+.empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+pre.code { margin: 6px 0 0; background: var(--code-bg); border-radius: 4px; padding: 6px 0; overflow-x: auto; font: 12.5px/1.5 var(--mono); }
+pre.code div { white-space: pre; padding: 0 10px 0 0; }
+pre.code span.n { display: inline-block; min-width: 3.2em; padding: 0 8px; text-align: right; color: var(--muted); user-select: none; }
+pre.code span.n2 { min-width: 2.8em; }
+pre.code div.focus { background: var(--focus-bg); }
+pre.code div.add { background: var(--add-bg); }
+pre.code div.del { background: var(--del-bg); }
+pre.code div.hunk { color: var(--hunk); }
+details.diff { margin-top: 10px; }
+details.diff summary { cursor: pointer; font-size: 14px; }
+.labels { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+.labels button { display: flex; flex-direction: column; align-items: flex-start; min-width: 118px; padding: 6px 10px; text-align: left; }
+.labels button b { font-family: var(--mono); font-size: 13.5px; }
+.labels button small { color: var(--muted); font-size: 12px; }
+.labels button.on, .conf button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.labels button.on small { color: var(--accent-ink); }
+.row { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.conf { display: flex; gap: 6px; }
+textarea { width: 100%; min-height: 54px; font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-top: 8px; }
+.nav-btns { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; }
+.saved { color: var(--ok); font-size: 13px; }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; padding: 12px 16px; }
+  nav { position: static; height: auto; max-height: 220px; }
+  .sides { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="progress"><span id="progress-text"></span><div class="bar"><i id="progress-bar"></i></div></div>
+  <div class="tools">
+    <button id="next-open" type="button" title="跳到下一条未答题目">下一条未答</button>
+    <button id="import" type="button">导入答案</button>
+    <button id="export" type="button" class="primary">导出答案</button>
+    <input id="import-file" type="file" accept=".csv,text/csv" hidden>
+  </div>
+</header>
+<div id="banners"></div>
+<div class="layout">
+  <nav>
+    <div class="filters"><label><input type="checkbox" id="only-open"> 只看未答</label></div>
+    <div class="grid" id="grid"></div>
+  </nav>
+  <main>
+    <section class="card" id="item"></section>
+    <section class="card" id="answer"></section>
+  </main>
+</div>
+<script id="packet" type="application/json">{{PACKET_JSON}}</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("packet").textContent);
+  var ITEMS = DATA.items;
+  var STORE_KEY = "pintrace:" + DATA.packet_id;
+  var HINTS = {
+    pinned: "完整 40 位 SHA", mutable: "标签、分支、短 SHA 等", not_direct: "本地、docker、可复用工作流、表达式",
+    unresolvable: "无法判断",
+    pin: "可变 → 完整 SHA", unpin: "完整 SHA → 可变", sha_change: "SHA → 另一个 SHA", tag_change: "可变 → 另一个可变值",
+    replace: "换成另一个 Action", remove: "引用被删除", entry: "新增的引用", no_change: "引用值没有变",
+    mixed: "多个引用、变化不同", unknown: "材料不足以判断"
+  };
+  var CONF = [["high", "高"], ["medium", "中"], ["low", "低"]];
+
+  // ---------- storage (browser storage can be unavailable; answers then live only until export)
+  var storageOk = true, state = { answers: {}, position: 0 };
+  try {
+    var saved = window.localStorage.getItem(STORE_KEY);
+    if (saved) { state = JSON.parse(saved); state.answers = state.answers || {}; }
+  } catch (e) { storageOk = false; }
+  function persist() {
+    if (!storageOk) return;
+    try { window.localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+    catch (e) { storageOk = false; showBanners(); }
+  }
+
+  // ---------- small DOM helpers; every text from the packet goes through textContent
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === "text") node.textContent = attrs[k];
+      else if (k === "class") node.className = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (child) { if (child) node.appendChild(child); });
+    return node;
+  }
+  function link(url, text) {
+    if (!/^https:\/\/github\.com\//.test(url || "")) return null;
+    return el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: text });
+  }
+  function isAnswered(uid) { var a = state.answers[uid]; return !!(a && a.answer); }
+  function answeredCount() { return ITEMS.filter(function (it) { return isAnswered(it.uid); }).length; }
+
+  // ---------- rendering an item
+  function excerptBlock(ex) {
+    if (!ex) return el("div", { class: "empty", text: "（无法显示该行附近的文件内容）" });
+    var pre = el("pre", { class: "code" });
+    ex.lines.forEach(function (text, i) {
+      var no = ex.start + i;
+      pre.appendChild(el("div", { class: no === ex.focus ? "focus" : "" }, [el("span", { class: "n", text: String(no) }), document.createTextNode(text)]));
+    });
+    return pre;
+  }
+  function refCard(ref) {
+    var step = ref.step_index === null || ref.step_index === undefined ? "—" : ref.step_index;
+    var meta = [ref.path + ":" + ref.line, "job " + (ref.job || "—"), "step " + step];
+    if (ref.step_name) meta.push("“" + ref.step_name + "”");
+    var card = el("div", { class: "ref" }, [
+      el("div", { class: "value", text: ref.value === null || ref.value === undefined ? "（无值）" : String(ref.value) }),
+      el("div", { class: "meta", text: meta.join(" · ") }),
+      el("div", { class: "meta", text: "行尾注释：" + (ref.comment ? ref.comment : "无") })
+    ]);
+    var a = link(ref.url, "在 GitHub 打开这一行");
+    if (a) card.appendChild(el("div", { class: "meta" }, [a]));
+    card.appendChild(excerptBlock(ref.excerpt));
+    return card;
+  }
+  function sideBlock(title, refs, emptyText) {
+    var block = el("div", { class: "side" }, [el("h3", { text: title + "（" + refs.length + " 条引用）" })]);
+    if (!refs.length) block.appendChild(el("div", { class: "empty", text: emptyText }));
+    refs.forEach(function (ref) { block.appendChild(refCard(ref)); });
+    return block;
+  }
+  function diffBlock(diff) {
+    var name = diff.before_path === diff.after_path ? (diff.after_path || "") :
+      (diff.before_path || "（新文件）") + " → " + (diff.after_path || "（文件被删除）");
+    var changed = diff.rows.filter(function (r) { return r.kind === "add" || r.kind === "del"; }).length;
+    // A whole file added or deleted is long and adds nothing beyond the excerpt above, so it starts collapsed.
+    var whole = !diff.before_path || !diff.after_path;
+    var details = el("details", whole ? { class: "diff" } : { class: "diff", open: "" },
+      [el("summary", { text: "文件改动：" + name + "（" + changed + " 行增删）" + (whole ? "　点击展开" : "") })]);
+    var pre = el("pre", { class: "code" });
+    if (!diff.rows.length) pre.appendChild(el("div", { text: "  （这次提交没有改动这个文件的内容）" }));
+    diff.rows.forEach(function (row) {
+      if (row.kind === "hunk") { pre.appendChild(el("div", { class: "hunk", text: row.text })); return; }
+      var sign = row.kind === "add" ? "+ " : row.kind === "del" ? "- " : "  ";
+      pre.appendChild(el("div", { class: row.kind === "same" ? "" : row.kind }, [
+        el("span", { class: "n n2", text: row.old ? String(row.old) : "" }),
+        el("span", { class: "n n2", text: row.new ? String(row.new) : "" }),
+        document.createTextNode(sign + row.text)]));
+    });
+    if (diff.truncated) pre.appendChild(el("div", { class: "hunk", text: "…… 还有 " + diff.truncated + " 行未显示，请点上方链接在 GitHub 查看完整改动" }));
+    details.appendChild(pre);
+    return details;
+  }
+  function renderItem() {
+    var index = state.position, item = ITEMS[index], task = DATA.tasks[item.task], box = document.getElementById("item");
+    box.textContent = "";
+    box.appendChild(el("div", { class: "item-head" }, [
+      el("span", { class: "no", text: "第 " + (index + 1) + " / " + ITEMS.length + " 条" }),
+      el("span", { class: "muted", text: "编号 " + item.uid }),
+      el("span", { class: "muted", text: "仓库 " + item.repository })]));
+    box.appendChild(el("div", { class: "question", text: task.question }));
+    var linkRow = el("div", { class: "muted" });
+    var commit = link(item.links.commit, "查看这次提交");
+    if (commit) linkRow.appendChild(commit);
+    var compare = link(item.links.compare, "前后对比");
+    if (compare) { linkRow.appendChild(document.createTextNode("　")); linkRow.appendChild(compare); }
+    box.appendChild(linkRow);
+    if (item.task === "classify_reference") {
+      box.appendChild(el("div", { class: "sides single" }, [sideBlock("要判断的引用", [item.reference], "")]));
+    } else {
+      box.appendChild(el("div", { class: "sides" }, [
+        sideBlock("变更前", item.before, "变更前没有列出引用"),
+        sideBlock("变更后", item.after, "变更后没有列出引用")]));
+      var diffs = el("div", { class: "diffs" }, [el("h3", { text: "这次提交对相关文件的改动" })]);
+      item.diffs.forEach(function (d) { diffs.appendChild(diffBlock(d)); });
+      box.appendChild(diffs);
+    }
+    renderAnswer();
+    renderNav();
+    window.scrollTo(0, 0);
+    if (location.hash !== "#" + (index + 1)) history.replaceState(null, "", "#" + (index + 1));
+  }
+
+  // ---------- answer panel
+  function setAnswer(field, value) {
+    var uid = ITEMS[state.position].uid;
+    var next = Object.assign({ answer: "", confidence: "", note: "" }, state.answers[uid]);
+    next[field] = value;
+    next.updated_at = new Date().toISOString();
+    state.answers = Object.assign({}, state.answers);
+    state.answers[uid] = next;
+    persist();
+  }
+  function renderAnswer() {
+    var item = ITEMS[state.position], task = DATA.tasks[item.task], box = document.getElementById("answer");
+    var current = state.answers[item.uid] || {};
+    box.textContent = "";
+    box.appendChild(el("div", { class: "question", text: "你的判断" }));
+    var labels = el("div", { class: "labels" });
+    task.labels.forEach(function (label, i) {
+      var key = String((i + 1) % 10);
+      var button = el("button", { type: "button", class: current.answer === label ? "on" : "", title: "快捷键 " + key }, [
+        el("b", { text: key + " · " + label }), el("small", { text: HINTS[label] || "" })]);
+      button.addEventListener("click", function () { setAnswer("answer", label); renderAnswer(); renderNav(); });
+      labels.appendChild(button);
+    });
+    box.appendChild(labels);
+    var conf = el("div", { class: "conf" });
+    CONF.forEach(function (pair) {
+      var b = el("button", { type: "button", class: current.confidence === pair[0] ? "on" : "", text: pair[1] });
+      b.addEventListener("click", function () { setAnswer("confidence", pair[0]); renderAnswer(); renderNav(); });
+      conf.appendChild(b);
+    });
+    var statusText = isAnswered(item.uid) ? (current.confidence ? "已作答" : "已作答，请选择把握程度") : "";
+    box.appendChild(el("div", { class: "row" }, [el("span", { text: "把握程度：" }), conf, el("span", { class: "saved", text: statusText })]));
+    var note = el("textarea", { placeholder: "备注（选填；选 unknown、mixed 或把握程度为低时请写明原因）" });
+    note.value = current.note || "";
+    note.addEventListener("input", function () { setAnswer("note", note.value); });
+    box.appendChild(note);
+    var prev = el("button", { type: "button", text: "← 上一条" }), next = el("button", { type: "button", class: "primary", text: "下一条 →" });
+    prev.disabled = state.position === 0;
+    next.disabled = state.position === ITEMS.length - 1;
+    prev.addEventListener("click", function () { go(state.position - 1); });
+    next.addEventListener("click", function () { go(state.position + 1); });
+    box.appendChild(el("div", { class: "nav-btns" }, [prev, el("span", { class: "muted", text: storageOk ? "答案会自动保存在本机浏览器中" : "" }), next]));
+  }
+
+  // ---------- navigation and progress
+  function renderNav() {
+    var grid = document.getElementById("grid"), onlyOpen = document.getElementById("only-open").checked, current = null;
+    grid.textContent = "";
+    ITEMS.forEach(function (item, i) {
+      if (onlyOpen && isAnswered(item.uid) && i !== state.position) return;
+      var a = state.answers[item.uid] || {};
+      var unsure = a.answer && (a.confidence === "low" || a.answer === "unknown");
+      var cls = [isAnswered(item.uid) ? "done" : "", unsure ? "unsure" : "", i === state.position ? "current" : ""].join(" ");
+      var b = el("button", { type: "button", class: cls, text: String(i + 1), title: isAnswered(item.uid) ? "已答：" + a.answer : "未答" });
+      b.addEventListener("click", function () { go(i); });
+      grid.appendChild(b);
+      if (i === state.position) current = b;
+    });
+    if (current) current.scrollIntoView({ block: "nearest" });
+    var done = answeredCount();
+    document.getElementById("progress-text").textContent = "已答 " + done + " / " + ITEMS.length;
+    document.getElementById("progress-bar").style.width = (100 * done / ITEMS.length) + "%";
+  }
+  function go(index) {
+    if (index < 0 || index >= ITEMS.length) return;
+    state.position = index;
+    persist();
+    renderItem();
+  }
+  function nextOpen() {
+    for (var step = 1; step <= ITEMS.length; step++) {
+      var i = (state.position + step) % ITEMS.length;
+      if (!isAnswered(ITEMS[i].uid)) { go(i); return; }
+    }
+    alert("全部题目都已作答。");
+  }
+
+  // ---------- export and import (CSV, UTF-8 with BOM so that Excel opens it correctly)
+  var COLUMNS = ["packet_id", "annotator", "position", "uid", "task", "answer", "confidence", "note", "updated_at_utc"];
+  function csvCell(value) {
+    var text = value === null || value === undefined ? "" : String(value);
+    return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  }
+  function exportCsv() {
+    var open = ITEMS.length - answeredCount();
+    if (open && !confirm("还有 " + open + " 条未作答。仍要导出当前进度吗？")) return;
+    var lines = [COLUMNS.join(",")];
+    ITEMS.forEach(function (item, i) {
+      var a = state.answers[item.uid] || {};
+      lines.push([DATA.packet_id, DATA.annotator, i + 1, item.uid, item.task, a.answer, a.confidence, a.note, a.updated_at].map(csvCell).join(","));
+    });
+    var blob = new Blob(["﻿" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+    var stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+    var a = el("a", { href: URL.createObjectURL(blob), download: "PinTrace_" + DATA.annotator + "_answers_" + stamp + ".csv" });
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  function parseCsv(text) {
+    var rows = [], row = [], cell = "", quoted = false;
+    text = text.replace(/^﻿/, "");
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (quoted) {
+        if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+        else if (c === '"') quoted = false;
+        else cell += c;
+      } else if (c === '"') quoted = true;
+      else if (c === ",") { row.push(cell); cell = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(cell); rows.push(row); row = []; cell = "";
+      } else cell += c;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+  function importCsv(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var rows = parseCsv(String(reader.result)), header = rows.shift() || [];
+      var col = function (name) { return header.indexOf(name); };
+      if (col("uid") < 0 || col("answer") < 0) { alert("这不是本工具导出的答案文件。"); return; }
+      var known = {}, restored = 0, foreign = 0, answers = Object.assign({}, state.answers);
+      ITEMS.forEach(function (it) { known[it.uid] = true; });
+      rows.forEach(function (r) {
+        if (!r[col("uid")]) return;
+        if (col("packet_id") >= 0 && r[col("packet_id")] !== DATA.packet_id) { foreign++; return; }
+        if (!known[r[col("uid")]]) return;
+        answers[r[col("uid")]] = { answer: r[col("answer")] || "", confidence: r[col("confidence")] || "",
+          note: r[col("note")] || "", updated_at: r[col("updated_at_utc")] || "" };
+        restored++;
+      });
+      if (foreign) { alert("文件来自另一份标注包，已拒绝导入。"); return; }
+      if (!confirm("将从文件恢复 " + restored + " 条答案，并覆盖本机上这些题目的现有答案。继续吗？")) return;
+      state.answers = answers;
+      persist();
+      renderItem();
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
+  // ---------- banners, keyboard and start-up
+  function showBanners() {
+    var box = document.getElementById("banners");
+    box.textContent = "";
+    if (DATA.practice) box.appendChild(el("div", { class: "banner", text: "这是练习题，不计入结果。完成后请导出答案发给组织者。" }));
+    if (!storageOk) box.appendChild(el("div", { class: "banner warn", text: "当前浏览器不能保存进度：关闭页面后答案会丢失。请经常点“导出答案”保存，或换用 Edge / Chrome 打开。" }));
+  }
+  document.addEventListener("keydown", function (event) {
+    var tag = (event.target && event.target.tagName) || "";
+    if (tag === "TEXTAREA" || tag === "INPUT" || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "ArrowRight") go(state.position + 1);
+    else if (event.key === "ArrowLeft") go(state.position - 1);
+    else if (/^[0-9]$/.test(event.key)) {
+      var labels = DATA.tasks[ITEMS[state.position].task].labels, i = (Number(event.key) + 9) % 10;
+      if (i < labels.length) { setAnswer("answer", labels[i]); renderAnswer(); renderNav(); }
+    }
+  });
+  document.getElementById("export").addEventListener("click", exportCsv);
+  document.getElementById("import").addEventListener("click", function () { document.getElementById("import-file").click(); });
+  document.getElementById("import-file").addEventListener("change", function (event) {
+    if (event.target.files[0]) importCsv(event.target.files[0]);
+    event.target.value = "";
+  });
+  document.getElementById("next-open").addEventListener("click", nextOpen);
+  document.getElementById("only-open").addEventListener("change", renderNav);
+  window.addEventListener("hashchange", function () {
+    var n = parseInt(location.hash.slice(1), 10);
+    if (n >= 1 && n <= ITEMS.length && n - 1 !== state.position) go(n - 1);
+  });
+  document.getElementById("title").textContent = DATA.practice ? "PinTrace 标注练习" : "PinTrace 标注 · " + DATA.annotator;
+  var start = parseInt(location.hash.slice(1), 10);
+  if (start >= 1 && start <= ITEMS.length) state.position = start - 1;
+  if (!(state.position >= 0 && state.position < ITEMS.length)) state.position = 0;
+  showBanners();
+  renderItem();
+})();
+</script>
+</body>
+</html>
