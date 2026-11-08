@@ -125,3 +125,11 @@ def test_freeze_hashes_refuse_a_missing_input(tmp_path):
         assert "missing.txt" in str(error)
     else:
         raise AssertionError("a missing freeze input must raise")
+
+
+def test_later_stages_add_protocol_files_and_keep_the_rest():
+    first, second = freeze.groups_for("freeze-1"), freeze.groups_for("freeze-2")
+    for group in freeze.FIXED_GROUPS:
+        assert first[group] == second[group]
+    assert set(first["protocol"]) < set(second["protocol"])
+    assert "tools/annotation/practice_explanation.md" in second["protocol"]

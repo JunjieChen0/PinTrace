@@ -1,14 +1,19 @@
 """Render the codebook and the illustrated tool guide to PDF, with screenshots of the practice packet.
 
-Usage: python -B -X utf8 tools/annotation/render_docs.py   (after make_packet.py)
+Usage:
+  python -B -X utf8 tools/annotation/render_docs.py            initial build (after make_packet.py)
+  python -B -X utf8 tools/annotation/render_docs.py --update   codebook revision and practice explanation only
 
 Screenshots come from a demo copy of the practice packet with a seeded answer state, opened in headless Microsoft
 Edge. The demo copy and the raw screenshots live under .tmp/. The two PDFs go to reports/human_validation_v2/build/, and
-one folder per annotator (send_A1/, send_A2/) collects exactly the files that annotator receives.
+one folder per annotator (send_A1/, send_A2/) collects exactly the files that annotator receives. An update writes
+the current codebook and the practice explanation to build/ and to send_update/, the same files for both annotators,
+and leaves the frozen initial folders untouched.
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import re
@@ -24,7 +29,7 @@ ROOT = HERE.parents[1]
 OUT = ROOT / "reports/human_validation_v2"
 BUILD = OUT / "build"
 ANNOTATORS = ("A1", "A2")
-CODEBOOK_PDF, GUIDE_PDF = "PinTrace_编码手册_v1.0.pdf", "PinTrace_标注工具使用说明_v1.0.pdf"
+GUIDE_PDF, EXPLANATION_PDF = "PinTrace_标注工具使用说明_v1.0.pdf", "PinTrace_练习讲解_v1.0.pdf"
 WORK = ROOT / ".tmp/annotation-docs"
 EDGE = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 WIDTH = 1366
@@ -172,7 +177,34 @@ def to_pdf(source: Path, target: Path, images: dict[str, Path]) -> None:
         raise RuntimeError(f"PDF was not written: {target}")
 
 
+def codebook_pdf() -> str:
+    """File name carrying the version stated on the codebook's own version line."""
+    version = re.search(r"版本 v(\d+\.\d+)", (HERE / "codebook.md").read_text(encoding="utf-8")).group(1)
+    return f"PinTrace_编码手册_v{version}.pdf"
+
+
+def update() -> None:
+    """Codebook revision plus practice explanation, identical for both annotators."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    names = [codebook_pdf(), EXPLANATION_PDF]
+    if (BUILD / names[0]).exists() and names[0].endswith("_v1.0.pdf"):
+        raise ValueError("The codebook version line still says v1.0; an update needs a new version")
+    to_pdf(HERE / "codebook.md", BUILD / names[0], {})
+    to_pdf(HERE / "practice_explanation.md", BUILD / EXPLANATION_PDF, {})
+    folder = OUT / "send_update"
+    folder.mkdir(exist_ok=True)
+    for name in names:
+        shutil.copy2(BUILD / name, folder / name)
+    print(json.dumps(dict(send={folder.name: names}), ensure_ascii=False))
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--update", action="store_true")
+    if parser.parse_args().update:
+        update()
+        return
+    CODEBOOK_PDF = codebook_pdf()
     WORK.mkdir(parents=True, exist_ok=True)
     images = {name: screenshot(name, shot) for name, shot in SHOTS.items()}
     to_pdf(HERE / "codebook.md", BUILD / CODEBOOK_PDF, {})

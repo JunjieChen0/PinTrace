@@ -6,7 +6,8 @@ Usage:
 
 A stage record is written once. Re-running a stage whose file hashes are unchanged only refreshes the Git binding
 (for example after the freeze is committed); a stage whose hashes changed is refused, so a later protocol revision
-must be frozen as a new stage. ``verify`` is what the scorer calls before it reads any answer.
+must be frozen as a new stage. A later stage may change only the protocol group: its classifier, baseline data, sample
+and packets must equal those of the stage it follows. ``verify`` is what the scorer calls before it reads any answer.
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from pintrace.formal_common import sha256  # noqa: E402
 
 OUT = ROOT / "reports/human_validation_v2"
 PRIVATE = OUT / "private"
-ANNOTATORS = ("A1", "A2")
 
 # Every group is hashed file by file; a missing file is an error, never a silent omission.
 GROUPS = {
@@ -44,6 +44,25 @@ GROUPS = {
                  "reports/human_validation_v2/build/PinTrace_编码手册_v1.0.pdf",
                  "reports/human_validation_v2/build/PinTrace_标注工具使用说明_v1.0.pdf"],
 }
+
+
+# Protocol files added by a stage, and the stage each one follows.
+STAGE_PROTOCOL = {
+    "freeze-2": ["tools/annotation/practice_explanation.md",
+                 "reports/human_validation_v2/build/PinTrace_编码手册_v1.1.pdf",
+                 "reports/human_validation_v2/build/PinTrace_练习讲解_v1.0.pdf"],
+}
+PREVIOUS = {"freeze-2": "freeze-1"}
+FIXED_GROUPS = ("classifier", "baseline_data", "sample", "packets")
+
+
+def groups_for(stage: str) -> dict:
+    groups = {name: list(paths) for name, paths in GROUPS.items()}
+    current = stage
+    while current in PREVIOUS or current in STAGE_PROTOCOL:
+        groups["protocol"] += STAGE_PROTOCOL.get(current, [])
+        current = PREVIOUS.get(current, "")
+    return groups
 
 
 def rule_versions() -> dict:
@@ -70,8 +89,7 @@ def hashes(root: Path = ROOT, groups: dict = GROUPS) -> dict:
 def sent_copies(root: Path = ROOT) -> dict:
     """Each annotator folder must hold byte-identical copies of the frozen build files."""
     problems = {}
-    for annotator in ANNOTATORS:
-        folder = root / f"reports/human_validation_v2/send_{annotator}"
+    for folder in sorted((root / "reports/human_validation_v2").glob("send_*")):
         for copy in sorted(folder.glob("*")):
             original = root / "reports/human_validation_v2/build" / copy.name
             if not original.is_file() or sha256(copy) != sha256(original):
@@ -79,10 +97,11 @@ def sent_copies(root: Path = ROOT) -> dict:
     return problems
 
 
-def git_state(root: Path = ROOT) -> dict:
+def git_state(root: Path = ROOT, groups: dict = GROUPS) -> dict:
     def git(*args):
-        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8").stdout.strip()
-    tracked = [p for p in GROUPS["protocol"] + GROUPS["classifier"] if not p.startswith("reports/")]
+        # Only trailing newlines go: porcelain lines start with a status column that may be a space.
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8").stdout.rstrip("\n")
+    tracked = [p for p in groups["protocol"] + groups["classifier"] if not p.startswith("reports/")]
     dirty = git("status", "--porcelain", "--", *tracked)
     return dict(head=git("rev-parse", "HEAD"), tracked_inputs_committed=not dirty,
                 uncommitted=sorted(line[3:] for line in dirty.splitlines()))
@@ -104,7 +123,13 @@ def record_path(stage: str, private: Path = PRIVATE) -> Path:
 
 
 def freeze(stage: str, note: str = "") -> dict:
-    current = hashes()
+    groups = groups_for(stage)
+    current = hashes(groups=groups)
+    if stage in PREVIOUS:
+        before = json.loads(record_path(PREVIOUS[stage]).read_text(encoding="utf-8"))["sha256"]
+        moved = compare({g: before[g] for g in FIXED_GROUPS}, {g: current[g] for g in FIXED_GROUPS})
+        if moved:
+            raise ValueError(f"{stage} may change only the protocol; changed since {PREVIOUS[stage]}: " + ", ".join(moved))
     copies = sent_copies()
     if copies:
         raise ValueError("Annotator folders differ from the build: " + ", ".join(copies))
@@ -115,7 +140,8 @@ def freeze(stage: str, note: str = "") -> dict:
                          + ", ".join(compare(previous["sha256"], current)))
     record = dict(stage=stage, note=note or (previous or {}).get("note", ""),
                   frozen_at_utc=(previous or {}).get("frozen_at_utc") or datetime.now(timezone.utc).isoformat(),
-                  git_bound_at_utc=datetime.now(timezone.utc).isoformat(), git=git_state(),
+                  follows=PREVIOUS.get(stage), git_bound_at_utc=datetime.now(timezone.utc).isoformat(),
+                  git=git_state(groups=groups),
                   rule_versions=rule_versions(), sha256=current,
                   policy=["No classifier, sample or packet change after this freeze until scoring is complete.",
                           "A codebook revision is frozen as a new stage before formal labelling starts.",
@@ -131,7 +157,7 @@ def verify(stage: str) -> list[str]:
     if not path.exists():
         return [f"no freeze record for stage {stage}"]
     recorded = json.loads(path.read_text(encoding="utf-8"))
-    return compare(recorded["sha256"], hashes()) + [f"copy:{p}" for p in sent_copies()]
+    return compare(recorded["sha256"], hashes(groups=groups_for(stage))) + [f"copy:{p}" for p in sent_copies()]
 
 
 def main() -> int:
