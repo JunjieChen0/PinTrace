@@ -51,8 +51,9 @@ STAGE_PROTOCOL = {
     "freeze-2": ["tools/annotation/practice_explanation.md",
                  "reports/human_validation_v2/build/PinTrace_编码手册_v1.1.pdf",
                  "reports/human_validation_v2/build/PinTrace_练习讲解_v1.0.pdf"],
+    "freeze-3": ["tools/annotation/score.py", "tests/test_annotation_score.py"],
 }
-PREVIOUS = {"freeze-2": "freeze-1"}
+PREVIOUS = {"freeze-2": "freeze-1", "freeze-3": "freeze-2"}
 FIXED_GROUPS = ("classifier", "baseline_data", "sample", "packets")
 
 
