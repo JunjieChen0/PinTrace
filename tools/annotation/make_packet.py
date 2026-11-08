@@ -23,6 +23,7 @@ import heapq
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -443,7 +444,42 @@ def write(result: dict, out: Path = BUILD, private: Path = PRIVATE) -> dict:
     return record
 
 
+def packet_items(page: str) -> dict:
+    """The packet data embedded in a rendered annotator page."""
+    found = re.search(r'<script id="packet" type="application/json">(.*?)</script>', page, re.S)
+    if not found:
+        raise ValueError("No packet data in the page")
+    return json.loads(found.group(1))
+
+
+def add_annotator(annotator: str, source: str = "A1", out: Path = BUILD, private: Path = PRIVATE) -> dict:
+    """A packet for a replacement annotator, built from a frozen packet so that the items are identical.
+
+    The source page is first re-rendered from its own items in its own order and must equal the frozen file byte
+    for byte; only then is the new annotator's order rendered.
+    """
+    if annotator in ANNOTATORS or (out / f"PinTrace_annotation_{annotator}.html").exists():
+        raise ValueError(f"A packet for {annotator} already exists")
+    template = TEMPLATE.read_text(encoding="utf-8")
+    source_path = out / f"PinTrace_annotation_{source}.html"
+    page = source_path.read_text(encoding="utf-8")
+    items = packet_items(page)["items"]
+    if render(template, f"pintrace-v2-{source}", source, order(items, source), False) != page:
+        raise ValueError(f"The {source} packet cannot be reproduced from its own items; refusing to derive a new one")
+    path = out / f"PinTrace_annotation_{annotator}.html"
+    path.write_text(render(template, f"pintrace-v2-{annotator}", annotator, order(items, annotator), False),
+                    encoding="utf-8", newline="\n")
+    record = dict(annotator=annotator, source=source, source_sha256=sha256(source_path), file=path.name,
+                  sha256=sha256(path), items=len(items), created_at_utc=datetime.now(timezone.utc).isoformat())
+    (private / f"build_{annotator}.json").write_text(json.dumps(record, indent=1, ensure_ascii=False) + "\n",
+                                                     encoding="utf-8", newline="\n")
+    return record
+
+
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--add":
+        print(json.dumps(add_annotator(sys.argv[2]), ensure_ascii=False))
+        return
     record = write(build())
     print(json.dumps(dict(items=record["items"], counts=record["counts"], practice=record["practice_items"],
                           skipped=record["skipped"], directory=OUT.relative_to(ROOT).as_posix()), ensure_ascii=False))

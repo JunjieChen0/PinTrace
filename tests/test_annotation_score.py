@@ -107,16 +107,17 @@ def test_consensus_must_settle_every_disagreement_and_keep_agreements(tmp_path):
 def test_score_stops_before_reading_answers_when_the_freeze_moved(tmp_path, monkeypatch):
     monkeypatch.setattr(score.freeze, "verify", lambda stage: ["protocol:tools/annotation/codebook.md"])
     with pytest.raises(ValueError, match="no answer read"):
-        score.score(tmp_path / "missing_a1.csv", tmp_path / "missing_a2.csv", None, private=tmp_path)
+        score.score({"A2": tmp_path / "missing_a2.csv", "A3": tmp_path / "missing_a3.csv"}, None, private=tmp_path)
 
 
 def test_score_end_to_end_reports_samples_and_tasks_apart(tmp_path, monkeypatch):
     monkeypatch.setattr(score.freeze, "verify", lambda stage: [])
     (tmp_path / "key.json").write_text(json.dumps(KEY), encoding="utf-8")
-    a1, a2 = write(tmp_path / "a1.csv", answers("A1", A1)), write(tmp_path / "a2.csv", answers("A2", A2))
+    a2, a3 = write(tmp_path / "a2.csv", answers("A2", A1)), write(tmp_path / "a3.csv", answers("A3", A2))
     consensus = write(tmp_path / "c.csv", [dict(uid="i000000002", consensus="unknown"),
                                            dict(uid="i000000004", consensus="pinned")], ["uid", "consensus"])
-    report = score.score(a1, a2, consensus, private=tmp_path)
+    report = score.score({"A2": a2, "A3": a3}, consensus, private=tmp_path)
+    assert report["annotators"] == ["A2", "A3"]
     assert set(report["agreement"]) == {"S1/classify_change", "S2/classify_change", "S2/classify_reference"}
     assert report["agreement"]["S1/classify_change"]["raw"]["hits"] == 1 and report["disagreements"] == 2
     s1 = report["against_pipeline"]["S1/classify_change"]
@@ -124,3 +125,10 @@ def test_score_end_to_end_reports_samples_and_tasks_apart(tmp_path, monkeypatch)
     assert s1["accuracy_decided"]["n"] == 1 and s1["human_coverage"]["hits"] == 1
     assert {"human": "unknown", "pipeline": "remove", "n": 1} in s1["confusion"]
     assert (tmp_path / "score/disagreements.csv").is_file() and (tmp_path / "score/score.json").is_file()
+    header = (tmp_path / "score/disagreements.csv").read_text(encoding="utf-8-sig").splitlines()[0]
+    assert "answer_A2" in header and "answer_A3" in header
+
+
+def test_score_refuses_anything_but_two_annotators(tmp_path):
+    with pytest.raises(ValueError, match="Exactly two"):
+        score.score({"A2": tmp_path / "a2.csv"}, None, private=tmp_path)

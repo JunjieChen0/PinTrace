@@ -133,3 +133,43 @@ def test_later_stages_add_protocol_files_and_keep_the_rest():
         assert first[group] == second[group]
     assert set(first["protocol"]) < set(second["protocol"])
     assert "tools/annotation/practice_explanation.md" in second["protocol"]
+
+
+def test_freeze_4_adds_only_the_replacement_packet_to_fixed_groups():
+    third, fourth = freeze.groups_for("freeze-3"), freeze.groups_for("freeze-4")
+    for group in freeze.FIXED_GROUPS:
+        assert set(third[group]) <= set(fourth[group])
+    added = {p for g in freeze.FIXED_GROUPS for p in set(fourth[g]) - set(third[g])}
+    assert added == {"reports/human_validation_v2/build/PinTrace_annotation_A3.html",
+                     "reports/human_validation_v2/private/build_A3.json"}
+
+
+def test_replacement_packet_keeps_the_items_and_changes_only_the_order(tmp_path, monkeypatch):
+    items = [dict(uid=f"i00000000{n}", task="classify_reference", reference={"value": f"a/b@v{n}"}) for n in range(5)]
+    template = packet.TEMPLATE.read_text(encoding="utf-8")
+    (tmp_path / "PinTrace_annotation_A1.html").write_text(
+        packet.render(template, "pintrace-v2-A1", "A1", packet.order(items, "A1"), False), encoding="utf-8", newline="\n")
+    record = packet.add_annotator("A9", out=tmp_path, private=tmp_path)
+    new = packet.packet_items((tmp_path / "PinTrace_annotation_A9.html").read_text(encoding="utf-8"))
+    assert new["packet_id"] == "pintrace-v2-A9" and record["items"] == 5
+    assert sorted(i["uid"] for i in new["items"]) == sorted(i["uid"] for i in items)
+    assert [i["uid"] for i in new["items"]] == [i["uid"] for i in packet.order(items, "A9")]
+    try:
+        packet.add_annotator("A9", out=tmp_path, private=tmp_path)
+    except ValueError as error:
+        assert "already exists" in str(error)
+    else:
+        raise AssertionError("a second packet for the same annotator must be refused")
+
+
+def test_replacement_packet_is_refused_when_the_source_was_edited(tmp_path):
+    items = [dict(uid="i000000001", task="classify_reference", reference={"value": "a/b@v1"})]
+    template = packet.TEMPLATE.read_text(encoding="utf-8")
+    page = packet.render(template, "pintrace-v2-A1", "A1", items, False).replace("PinTrace", "PinTrace ", 1)
+    (tmp_path / "PinTrace_annotation_A1.html").write_text(page, encoding="utf-8", newline="\n")
+    try:
+        packet.add_annotator("A9", out=tmp_path, private=tmp_path)
+    except ValueError as error:
+        assert "cannot be reproduced" in str(error)
+    else:
+        raise AssertionError("an edited source packet must be refused")

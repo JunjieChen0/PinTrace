@@ -1,10 +1,12 @@
 """Score the independent annotation: annotator agreement, the disagreement sheet, then consensus against the pipeline.
 
 Usage:
-  python -B -X utf8 tools/annotation/score.py --a1 A1.csv --a2 A2.csv
+  python -B -X utf8 tools/annotation/score.py --answers A2=A2.csv --answers A3=A3.csv
       check the freeze, validate both answer files, report agreement and write the disagreement sheet
-  python -B -X utf8 tools/annotation/score.py --a1 A1.csv --a2 A2.csv --consensus consensus.csv
+  python -B -X utf8 tools/annotation/score.py --answers A2=A2.csv --answers A3=A3.csv --consensus consensus.csv
       also compare the consensus labels with the pipeline
+
+Exactly two annotators are scored. A1's formal file is excluded (protocol log, 2026-11-08) and A3 replaces A1.
 
 Nothing is read before ``freeze.verify`` passes. The disagreement sheet carries the two answers only, never the
 pipeline label, so the consensus discussion stays blind. S1 (the gold set) and S2 (the uniform sample) are always
@@ -30,7 +32,7 @@ import freeze  # noqa: E402
 from make_packet import TASKS  # noqa: E402
 
 PRIVATE = ROOT / "reports/human_validation_v2/private"
-STAGE = "freeze-3"
+STAGE = "freeze-4"
 CONFIDENCE = {"high", "medium", "low"}
 FAST_GAP_SECONDS = 2.0
 Z95 = 1.959963984540054
@@ -122,17 +124,17 @@ def agreement(key: dict, first: dict, second: dict) -> dict:
     return report
 
 
-def disagreements(key: dict, first: dict, second: dict) -> list[dict]:
+def disagreements(key: dict, first: dict, second: dict, names: tuple = ("A1", "A2")) -> list[dict]:
     """Blind sheet: the uid, each annotator's position, answer, confidence and note, and an empty consensus column."""
     sheet = []
     for (_, task), items in cells(key).items():
         for item in items:
-            a, b = first[item], second[item]
-            if a["answer"] != b["answer"]:
-                sheet.append(dict(uid=item, task=task, position_A1=a["position"], answer_A1=a["answer"],
-                                  confidence_A1=a["confidence"], note_A1=a["note"], position_A2=b["position"],
-                                  answer_A2=b["answer"], confidence_A2=b["confidence"], note_A2=b["note"],
-                                  consensus="", reason=""))
+            if first[item]["answer"] != second[item]["answer"]:
+                row = dict(uid=item, task=task)
+                for name, answers in zip(names, (first, second)):
+                    for field in ("position", "answer", "confidence", "note"):
+                        row[f"{field}_{name}"] = answers[item][field]
+                sheet.append(dict(row, consensus="", reason=""))
     return sheet
 
 
@@ -177,17 +179,21 @@ def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
         writer.writerows(rows)
 
 
-def score(a1: Path, a2: Path, consensus: Path | None, stage: str = STAGE, private: Path = PRIVATE) -> dict:
+def score(answers: dict, consensus: Path | None, stage: str = STAGE, private: Path = PRIVATE) -> dict:
+    """``answers`` maps exactly two annotator ids to their export files."""
+    if len(answers) != 2:
+        raise ValueError("Exactly two annotators are scored")
     problems = freeze.verify(stage)
     if problems:
         raise ValueError(f"{stage} check failed, no answer read: " + ", ".join(problems))
     key = json.loads((private / "key.json").read_text(encoding="utf-8"))
-    first, second = read_answers(a1, "A1", key), read_answers(a2, "A2", key)
+    names = tuple(answers)
+    first, second = (read_answers(answers[name], name, key) for name in names)
     out = private / "score"
-    sheet = disagreements(key, first, second)
+    sheet = disagreements(key, first, second, names)
     write_csv(out / "disagreements.csv", sheet, list(sheet[0]) if sheet else ["uid", "consensus", "reason"])
-    report = dict(stage=stage, inputs={"A1": freeze.sha256(Path(a1)), "A2": freeze.sha256(Path(a2))},
-                  timing={"A1": timing(first), "A2": timing(second)},
+    report = dict(stage=stage, annotators=list(names), inputs={name: freeze.sha256(Path(answers[name])) for name in names},
+                  timing={name: timing(rows) for name, rows in zip(names, (first, second))},
                   agreement=agreement(key, first, second), disagreements=len(sheet))
     if consensus:
         report["inputs"]["consensus"] = freeze.sha256(Path(consensus))
@@ -198,12 +204,12 @@ def score(a1: Path, a2: Path, consensus: Path | None, stage: str = STAGE, privat
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--a1", required=True, type=Path)
-    parser.add_argument("--a2", required=True, type=Path)
+    parser.add_argument("--answers", action="append", required=True, metavar="ID=PATH")
     parser.add_argument("--consensus", type=Path)
     parser.add_argument("--stage", default=STAGE)
     args = parser.parse_args()
-    report = score(args.a1, args.a2, args.consensus, args.stage)
+    answers = dict(pair.split("=", 1) for pair in args.answers)
+    report = score({name: Path(path) for name, path in answers.items()}, args.consensus, args.stage)
     print(json.dumps({k: report[k] for k in ("timing", "agreement", "disagreements")}, ensure_ascii=False, indent=1))
     return 0
 

@@ -53,8 +53,14 @@ STAGE_PROTOCOL = {
                  "reports/human_validation_v2/build/PinTrace_练习讲解_v1.0.pdf"],
     "freeze-3": ["tools/annotation/score.py", "tests/test_annotation_score.py"],
 }
-PREVIOUS = {"freeze-2": "freeze-1", "freeze-3": "freeze-2"}
+PREVIOUS = {"freeze-2": "freeze-1", "freeze-3": "freeze-2", "freeze-4": "freeze-3"}
 FIXED_GROUPS = ("classifier", "baseline_data", "sample", "packets")
+# Files a stage adds to a fixed group. Every file the previous stage froze must stay byte-identical; only these may
+# appear. freeze-4 adds the packet of A3, who replaces A1 (protocol log, 2026-11-08).
+STAGE_ADDED = {
+    "freeze-4": {"packets": ["reports/human_validation_v2/build/PinTrace_annotation_A3.html"],
+                 "sample": ["reports/human_validation_v2/private/build_A3.json"]},
+}
 
 
 def groups_for(stage: str) -> dict:
@@ -62,6 +68,8 @@ def groups_for(stage: str) -> dict:
     current = stage
     while current in PREVIOUS or current in STAGE_PROTOCOL:
         groups["protocol"] += STAGE_PROTOCOL.get(current, [])
+        for group, paths in STAGE_ADDED.get(current, {}).items():
+            groups[group] += paths
         current = PREVIOUS.get(current, "")
     return groups
 
@@ -128,7 +136,7 @@ def freeze(stage: str, note: str = "") -> dict:
     current = hashes(groups=groups)
     if stage in PREVIOUS:
         before = json.loads(record_path(PREVIOUS[stage]).read_text(encoding="utf-8"))["sha256"]
-        moved = compare({g: before[g] for g in FIXED_GROUPS}, {g: current[g] for g in FIXED_GROUPS})
+        moved = compare({g: before[g] for g in FIXED_GROUPS}, {g: {p: current[g].get(p) for p in before[g]} for g in FIXED_GROUPS})
         if moved:
             raise ValueError(f"{stage} may change only the protocol; changed since {PREVIOUS[stage]}: " + ", ".join(moved))
     copies = sent_copies()
