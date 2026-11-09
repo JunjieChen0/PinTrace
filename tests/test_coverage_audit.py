@@ -1,25 +1,105 @@
 """Sampling and coverage estimates (pintrace/coverage_audit.py) on synthetic data."""
 
+import gzip
+import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from pintrace import coverage_audit as ca
+from pintrace import coverage_crawl as cc
+from test_coverage_crawl import Session, page
 
 
-def crawl(directory, names, complete=True):
-    directory.mkdir(exist_ok=True)
-    (directory / "dependents.csv").write_text(
-        "page,position,repository\n" + "".join(f"0,{i},{n}\n" for i, n in enumerate(names)), encoding="utf-8")
-    if complete:
-        (directory / "complete.json").write_text("{}", encoding="utf-8")
+ANCHOR = datetime(2025, 3, 14, tzinfo=timezone.utc)
+
+
+def crawl(directory, pages, monkeypatch, limit=None):
+    """A real crawl directory written by coverage_crawl from synthetic pages."""
+    monkeypatch.setattr(cc.time, "sleep", lambda seconds: None)
+    cc.crawl(directory, delay=1, limit=limit, session=Session(pages))
     return directory
 
 
-def test_read_dependents_dedupes_case_insensitively_and_requires_a_complete_crawl(tmp_path):
-    assert ca.read_dependents(crawl(tmp_path / "done", ["A/x", "a/X", "b/y"])) == ["A/x", "b/y"]
-    with pytest.raises(ValueError):
-        ca.read_dependents(crawl(tmp_path / "partial", ["a/x"], complete=False))
+def three_pages():
+    return [page(["A/x", "b/y"], "Q1"), page(["a/X"], "Q2"), page(["c/z"])]
+
+
+def rewrite_page(directory, index, **fields):
+    lines = (directory / "pages.jsonl").read_text(encoding="utf-8").splitlines()
+    lines[index] = json.dumps(dict(json.loads(lines[index]), **fields))
+    (directory / "pages.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_read_dependents_dedupes_case_insensitively_from_a_verified_crawl(tmp_path, monkeypatch):
+    assert ca.read_dependents(crawl(tmp_path, three_pages(), monkeypatch)) == ["A/x", "b/y", "c/z"]
+
+
+def test_verify_crawl_rejects_an_incomplete_crawl(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="not complete"):
+        ca.verify_crawl(crawl(tmp_path, three_pages(), monkeypatch, limit=2))
+
+
+def test_verify_crawl_rejects_a_tampered_raw_page(tmp_path, monkeypatch):
+    directory = crawl(tmp_path, three_pages(), monkeypatch)
+    (directory / "raw" / "00001.html.gz").write_bytes(gzip.compress(page(["e/v"], "Q2").encode("utf-8")))
+    with pytest.raises(ValueError, match="SHA-256"):
+        ca.verify_crawl(directory)
+
+
+def test_verify_crawl_rejects_a_broken_link_chain(tmp_path, monkeypatch):
+    directory = crawl(tmp_path, three_pages(), monkeypatch)
+    url = json.loads((directory / "pages.jsonl").read_text(encoding="utf-8").splitlines()[2])["url"]
+    rewrite_page(directory, 2, url=url + "&skipped=1")
+    with pytest.raises(ValueError, match="Next link"):
+        ca.verify_crawl(directory)
+
+
+def test_verify_crawl_rejects_a_list_without_the_end_marker(tmp_path, monkeypatch):
+    directory = crawl(tmp_path, three_pages(), monkeypatch)
+    raw = page(["c/z"]).replace("<button disabled>Next</button>", "").encode("utf-8")
+    (directory / "raw" / "00002.html.gz").write_bytes(gzip.compress(raw))
+    rewrite_page(directory, 2, sha256=hashlib.sha256(raw).hexdigest())
+    with pytest.raises(ValueError, match="end marker"):
+        ca.verify_crawl(directory)
+
+
+def test_verify_crawl_rejects_rows_not_in_the_raw_pages(tmp_path, monkeypatch):
+    directory = crawl(tmp_path, three_pages(), monkeypatch)
+    with (directory / "dependents.csv").open("a", encoding="utf-8") as stream:
+        stream.write("2,1,extra/repo\n")
+    with pytest.raises(ValueError, match="re-parsed"):
+        ca.verify_crawl(directory)
+
+
+def test_identity_check_applies_the_cohort_conditions():
+    good = dict(repository_id="1", canonical_repository="o/r", created_at="2020-01-01T00:00:00Z")
+    assert ca.identity_check(good, ANCHOR) == []
+    assert ca.identity_check(dict(good, created_at="2025-03-14T00:00:00Z"), ANCHOR) == ["current_entity_created_not_before_anchor"]
+    assert ca.identity_check(dict(good, created_at="2020-01-01T00:00:00"), ANCHOR) == ["current_created_invalid"]
+    assert ca.identity_check(dict(good, repository_id=None, created_at=None), ANCHOR) == [
+        "current_metadata_identity_invalid", "current_created_invalid"]
+
+
+def test_apply_identity_moves_a_late_fork_out_of_confirmed_without_mutating_input():
+    rows = [dict(status="confirmed", repository_id="1", canonical_repository="o/r", created_at="2025-06-01T00:00:00Z",
+                 current_fork=True),
+            dict(status="not_at_baseline", created_at="2025-06-01T00:00:00Z")]
+    output = ca.apply_identity(rows, ANCHOR)
+    assert output[0]["status"] == "historical_identity_unknown" and rows[0]["status"] == "confirmed"
+    assert output[1] is rows[1]
+
+
+def test_missing_bounds_count_unknown_rows_as_ineligible_and_as_eligible():
+    sample = ([dict(status="confirmed")] * 30 + [dict(status="not_at_baseline")] * 60
+              + [dict(status="collection_failed")] * 6 + [dict(status="historical_identity_unknown")] * 4)
+    result = ca.estimate(listed=1_000, frame_listed=0, formal_listed=50, sample_rows=sample)
+    bounds = result["missing_bounds"]
+    assert bounds["planned"] == 100 and bounds["unknown"] == 10
+    assert bounds["rate_low"] == 0.30 and bounds["rate_high"] == 0.40
+    assert bounds["coverage_low"] == pytest.approx(50 / 450) and bounds["coverage_high"] == pytest.approx(50 / 350)
+    assert result["pre_incident_rate"]["total"] == 90
 
 
 def test_sample_excludes_the_frame_and_does_not_depend_on_list_order():

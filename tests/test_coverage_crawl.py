@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from pintrace import coverage_crawl as cc
 
 

@@ -30,6 +30,7 @@ ROW = re.compile(r'data-test-id="dg-repo-pkg-dependent"(.*?)(?=data-test-id="dg-
 REPOSITORY = re.compile(r'data-hovercard-type="repository"[^>]*href="/([^"/]+/[^"/]+)"')
 NEXT = re.compile(r'<a[^>]*href="([^"]*dependents_after=[^"]*)"[^>]*>\s*Next\s*</a>')
 TOTAL = re.compile(r'([\d,]+)\s+Repositories')
+DISABLED_NEXT = re.compile(r'<button[^>]*disabled[^>]*>\s*Next\s*</button>')
 BACKOFF_SECONDS = 60
 MAX_ATTEMPTS = 5
 
@@ -47,6 +48,11 @@ def parse_page(page):
     if nxt and nxt.startswith("/"):
         nxt = "https://github.com" + nxt
     return repositories, nxt, int(total.group(1).replace(",", "")) if total else None
+
+
+def has_disabled_next(page):
+    """The list's own end marker: a disabled Next button. Missing both it and a Next link means the layout changed."""
+    return bool(DISABLED_NEXT.search(page))
 
 
 def fetch(session, url, delay):
@@ -89,6 +95,8 @@ def crawl(directory, delay=2.5, limit=None, session=None):
             repositories, following, total = parse_page(body)
             if not repositories:
                 raise RuntimeError(f"No dependents parsed on page {index}: {url}")
+            if following is None and not has_disabled_next(body):
+                raise RuntimeError(f"Page {index} has neither a Next link nor the end marker: {url}")
             (directory / "raw" / f"{index:05d}.html.gz").write_bytes(gzip.compress(raw, mtime=0))
             table.writerows([index, position, name] for position, name in enumerate(repositories))
             pages.write(json.dumps(dict(page=index, url=url, sha256=hashlib.sha256(raw).hexdigest(), rows=len(repositories),

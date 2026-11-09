@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
+import hashlib
 import json
 import random
 import statistics
@@ -28,6 +30,7 @@ from pathlib import Path
 
 import requests
 
+from . import coverage_crawl as crawler
 from .baseline import baseline_status, pre_event_point
 from .cohort import digest, save_detail
 from .control_baseline import activity, reference_profile
@@ -73,16 +76,48 @@ def formal_records(root):
     return records
 
 
-def read_dependents(directory):
-    """Unique dependents in list order (case-insensitive); the crawl must be complete."""
+def verify_crawl(directory):
+    """Re-derive the list from the raw pages and check the crawl end to end; raises on any inconsistency.
+
+    Pages must be numbered 0..n-1 as recorded in complete.json; page 0 is the list's first page and each later page
+    is the previous page's Next link; each raw page matches its SHA-256 and re-parses to the recorded rows and Next
+    link; only the last page lacks a Next link, and it carries the list's disabled-Next end marker."""
     if not (directory / "complete.json").exists():
         raise ValueError(f"Crawl is not complete: {directory}")
-    seen, ordered = set(), []
+    pages = [json.loads(line) for line in (directory / "pages.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    declared = json.loads((directory / "complete.json").read_text(encoding="utf-8"))["pages"]
+    if [p["page"] for p in pages] != list(range(len(pages))) or len(pages) != declared:
+        raise ValueError("Crawl pages are not numbered 0..n-1 as declared")
     with (directory / "dependents.csv").open(encoding="utf-8", newline="") as stream:
-        for row in csv.DictReader(stream):
-            if row["repository"].lower() not in seen:
-                seen.add(row["repository"].lower())
-                ordered.append(row["repository"])
+        listed = [(int(r["page"]), r["repository"]) for r in csv.DictReader(stream)]
+    parsed = []
+    for previous, page in zip([None, *pages], pages):
+        expected_url = crawler.BASE if previous is None else previous["next"]
+        if page["url"] != expected_url:
+            raise ValueError(f"Page {page['page']} does not follow the previous page's Next link")
+        raw = gzip.decompress((directory / "raw" / f"{page['page']:05d}.html.gz").read_bytes())
+        if hashlib.sha256(raw).hexdigest() != page["sha256"]:
+            raise ValueError(f"Raw page {page['page']} does not match its SHA-256")
+        body = raw.decode("utf-8")
+        repositories, following, _ = crawler.parse_page(body)
+        if following != page["next"] or len(repositories) != page["rows"]:
+            raise ValueError(f"Raw page {page['page']} does not re-parse to its record")
+        last = page is pages[-1]
+        if (following is None) != last or (last and not crawler.has_disabled_next(body)):
+            raise ValueError(f"Page {page['page']} ends the list without the end marker, or the last page has a Next link")
+        parsed += [(page["page"], name) for name in repositories]
+    if parsed != listed:
+        raise ValueError("dependents.csv differs from the rows re-parsed from the raw pages")
+    return [name for _, name in parsed]
+
+
+def read_dependents(directory):
+    """Unique dependents in list order (case-insensitive), from a crawl that passes verify_crawl."""
+    seen, ordered = set(), []
+    for name in verify_crawl(directory):
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            ordered.append(name)
     return ordered
 
 
@@ -167,19 +202,55 @@ def not_fork(row):
     return not row.get("current_fork")
 
 
+def identity_check(record, anchor):
+    """The necessary identity conditions applied to the formal cohort (entity_identity.classify_group) that need no
+    source roster: a valid current identity, and a current entity created before the anchor. A repository created
+    later can carry pre-anchor history that belongs to another entity, e.g. a fork created after the incident."""
+    reasons = []
+    if not record.get("repository_id") or not record.get("canonical_repository"):
+        reasons.append("current_metadata_identity_invalid")
+    try:
+        created = datetime.fromisoformat(str(record.get("created_at")).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            raise ValueError("no time zone")
+    except ValueError:
+        reasons.append("current_created_invalid")
+    else:
+        if created >= anchor:
+            reasons.append("current_entity_created_not_before_anchor")
+    return reasons
+
+
+def apply_identity(rows, anchor):
+    """Confirmed rows that fail the identity check become historical_identity_unknown, as in the formal cohort."""
+    output = []
+    for row in rows:
+        reasons = identity_check(row, anchor) if row["status"] == "confirmed" else []
+        output.append(dict(row, status="historical_identity_unknown", identity_reasons=reasons) if reasons else row)
+    return output
+
+
 def estimate(listed, frame_listed, formal_listed, sample_rows, eligible=lambda row: True):
     """Pre-incident dependents among current dependents, and the formal cohort's share of them. ``eligible`` narrows
-    which confirmed rows count (for example non-forks); the denominator stays every resolved sampled row."""
+    which confirmed rows count (for example non-forks); the denominator stays every resolved sampled row.
+
+    ``missing_bounds`` treats every unresolved sampled row (failed, inaccessible, unparsed or of unknown identity) as
+    not eligible (low) and as eligible (high), with every planned row in the denominator."""
     statuses = Counter(r["status"] for r in sample_rows)
     successes = sum(r["status"] == "confirmed" and eligible(r) for r in sample_rows)
-    rate = wilson(successes, sum(statuses[s] for s in RESOLVED))
+    resolved = sum(statuses[s] for s in RESOLVED)
+    rate = wilson(successes, resolved)
     outside = listed - frame_listed
     scale = lambda p: formal_listed + p * outside
+    planned, unknown = len(sample_rows), len(sample_rows) - resolved
+    low_rate, high_rate = successes / planned, (successes + unknown) / planned
     return dict(sample_status=dict(statuses), pre_incident_rate=rate, dependents_outside_frame=outside,
                 estimated_pre_incident_outside=dict(estimate=rate["estimate"] * outside, low=rate["low"] * outside,
                                                     high=rate["high"] * outside) if rate else None,
                 formal_coverage=dict(estimate=formal_listed / scale(rate["estimate"]), low=formal_listed / scale(rate["high"]),
-                                     high=formal_listed / scale(rate["low"])) if rate else None)
+                                     high=formal_listed / scale(rate["low"])) if rate else None,
+                missing_bounds=dict(planned=planned, unknown=unknown, rate_low=low_rate, rate_high=high_rate,
+                                    coverage_low=formal_listed / scale(high_rate), coverage_high=formal_listed / scale(low_rate)))
 
 
 # ---------------------------------------------------------------- commands
@@ -226,8 +297,12 @@ def run_summarize(root, crawl):
     formal = formal_records(root)
     formal_listed = sum(r["repository"].lower() in dependents or (r.get("canonical_repository") or "").lower() in dependents
                         for r in formal.values())
-    sample = [json.loads(output_path(root, name).read_text(encoding="utf-8"))["summary"]
-              for name in read_sample(root) if output_path(root, name).exists()]
+    anchor = datetime.fromisoformat(tomllib.loads((root / "study.toml").read_text(encoding="utf-8"))["study"]["event_anchor"]
+                                    .replace("Z", "+00:00"))
+    # A failed collection is not saved; it stays in the sample as collection_failed so that it reaches the bounds.
+    saved = [json.loads(output_path(root, name).read_text(encoding="utf-8"))["summary"] if output_path(root, name).exists()
+             else dict(repository=name, status="collection_failed") for name in read_sample(root)]
+    sample = apply_identity(saved, anchor)
     covariates = {str(r["repository_id"]): r for r in
                   json.loads((root / "data/derived/control-v1/treated_covariates.json").read_text(encoding="utf-8"))}
     cohort_rows = [dict(covariates[i], target_full_sha=formal[i].get("target_full_sha", 0),
@@ -239,7 +314,13 @@ def run_summarize(root, crawl):
                              listed_unique=len(dependents), dependents_sha256=digest(crawl / "dependents.csv")),
                   frame=dict(names=len(frame), listed=len(dependents & frame)),
                   formal=dict(repositories=len(formal), listed=formal_listed),
-                  sample=dict(planned=len(read_sample(root)), collected=len(sample), seed=SEED),
+                  sample=dict(planned=len(sample), collected=sum(r["status"] != "collection_failed" for r in sample), seed=SEED),
+                  identity_excluded=dict(all=sum(r["status"] == "historical_identity_unknown" for r in sample),
+                                         non_fork=sum(r["status"] == "historical_identity_unknown" and not_fork(r) for r in sample),
+                                         reasons=dict(Counter(x for r in sample for x in r.get("identity_reasons", [])))),
+                  population="Pre-incident dependents that the dependents list still shows. formal_coverage is the formal "
+                             "repositories still listed over those plus the estimate outside the frame; the share of all "
+                             "pre-incident dependents, including those that removed the Action, is not observable here.",
                   **estimate(len(dependents), len(dependents & frame), formal_listed, sample),
                   # The page shows a larger count than it lists; scaling to that count is a sensitivity bound.
                   coverage_if_count_shown=estimate(pages[0]["total_shown"], len(dependents & frame), formal_listed,
