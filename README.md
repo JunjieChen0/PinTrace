@@ -107,7 +107,9 @@ python tools/annotation/freeze.py freeze-6 --check
 
 ## 复现数据
 
-Zenodo 记录包含两个归档。测量归档（24 个分卷，合并说明见 `JOIN_MEASUREMENTS.md`）包含测量快照、上游证据与匹配对照。结果归档 `pintrace-results-v1.tar.zst` 包含正式结果文件、覆盖审计的爬取页面、样本与资格记录、分层分析、150 项金标集、400 项独立标注（标注包、codebook、冻结记录、A3 与 A4 的化名答案、共识与评分）、论文源与 `claim_ledger.json`。归档内的 `README_DATA.md` 列出文件、校验值与目录布局；把数据目录放回 `data/derived/` 后即可按上面的顺序重算或核对。
+Zenodo 记录包含两个归档。测量归档（24 个分卷，合并、流式解包与校验见 `JOIN_MEASUREMENTS.md`；解压后约 41 GiB）包含测量快照、上游证据与匹配对照。结果归档 `pintrace-results-v1.tar.zst` 包含正式结果文件、覆盖审计的爬取页面、样本与资格记录、分层分析、150 项金标集、400 项独立标注（标注包、codebook、冻结记录、A3 与 A4 的化名答案、共识与评分）、论文源与 `claim_ledger.json`。从 1.8.3 起，它还在 `data/` 下按仓库路径收录正式入口 `formal_stats --working` 所校验、而测量归档没有的输入（GitHub API 缓存、stage-freeze 脚本、来源框架文件、开发检查点表）和 `formal-stats-v3` 的运行清单，并在 `paper/` 下收录正式入口最后两个阶段要核对的初稿材料，因此只凭代码标签和两份归档就能从正式入口重跑。归档内的 `README_DATA.md` 列出文件、校验值、目录布局和逐步的复现命令；Zenodo 记录中的 `reproduce.py` 与 `expected.json` 在空目录里自动完成全部步骤，并把每个输出与归档逐字节比较。
+
+论文构建另需 TeX（pdfLaTeX、Biber 及论文用到的宏包）；`requirements-formal.txt` 只固定分析部分的 Python 依赖。
 
 ### 行尾与实现哈希
 
