@@ -58,6 +58,42 @@ def test_acceptance_passes_a_complete_stratum_and_names_each_gap():
     assert not any(p.startswith("explained") for p in result["problems"])
 
 
+def periods(pre_conversions, pre_exposure=40.0):
+    rows = {p: dict(conversions=5, removals=0, mutable_updates=0, exposure=40.0) for p in sw.PERIODS}
+    rows["pre"] = dict(conversions=pre_conversions, removals=0, mutable_updates=0, exposure=pre_exposure)
+    return {"periods": rows}
+
+
+def test_zero_pre_incident_conversions_skip_the_bootstrap_and_state_the_reason(monkeypatch):
+    monkeypatch.setattr(sw.pr, "conversion_periods", lambda records, ids: periods(0))
+    monkeypatch.setattr(sw.pr, "owner_clustered", lambda *a: (_ for _ in ()).throw(AssertionError("bootstrap ran")))
+    described = sw.describe([], {"1"})
+    assert all(value is None for value in described["ratios"].values())
+    assert set(described["undefined_reasons"].values()) == {"no pre-incident conversion in this stratum"}
+    assert sw.acceptance({"zero": described})["passed"]
+    monkeypatch.setattr(sw.pr, "conversion_periods", lambda records, ids: periods(0, pre_exposure=0.0))
+    assert set(sw.describe([], {"1"})["undefined_reasons"].values()) == {"no pre-incident exposure"}
+
+
+def test_a_bootstrap_without_finite_replicates_is_recorded_not_raised(monkeypatch):
+    monkeypatch.setattr(sw.pr, "conversion_periods", lambda records, ids: periods(3))
+    monkeypatch.setattr(sw.pr, "owner_clustered", lambda *a: {"other.repository": {}})
+    described = sw.describe([], {"1"})
+    assert described["undefined"] == list(sw.STATISTICS)
+    assert set(described["undefined_reasons"].values()) == {"no finite bootstrap replicate"}
+
+
+def test_support_separates_supported_unsupported_and_inestimable():
+    defined = lambda lower: dict(estimate=2.0, lower=lower, upper=5.0)
+    strata = {"both": dict(ratios=dict(rr_m1=defined(1.5), rr_m1318=defined(1.2))),
+              "first_only": dict(ratios=dict(rr_m1=defined(1.5), rr_m1318=defined(0.4))),
+              "none": dict(ratios=dict(rr_m1=None, rr_m1318=None))}
+    verdicts, summary = sw.support(strata)
+    assert verdicts["first_only"] == dict(first_wave="supported", second_wave="not_supported")
+    assert verdicts["none"] == dict(first_wave="not_estimable", second_wave="not_estimable")
+    assert summary == dict(strata=3, estimable=2, first_wave_supported=2, second_wave_supported=1)
+
+
 def test_report_passes_acceptance():
     path = ROOT / "reports/stratified_waves.json"
     if not path.exists():

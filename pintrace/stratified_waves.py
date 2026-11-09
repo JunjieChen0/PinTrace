@@ -58,18 +58,37 @@ def strata(rows):
 def describe(records, ids):
     """Counts and exposure in the three periods behind the ratios, plus the repository-clustered ratios."""
     periods = pr.conversion_periods(records, ids)["periods"]
-    with np.errstate(divide="ignore", invalid="ignore"):  # replicates with no pre-incident conversion are dropped
-        clustered = pr.owner_clustered(records, ids, None)["other.repository"]
-    # Missing when every replicate was undefined; non-finite when the stratum's own pre-incident rate is zero.
-    ratios = {key: clustered[key] if key in clustered and math.isfinite(clustered[key]["estimate"]) else None
-              for key in STATISTICS}
-    reason = ("no pre-incident conversion in this stratum" if periods["pre"]["conversions"] == 0
-              else "no finite bootstrap replicate")
+    pre = periods["pre"]
+    if pre["conversions"] == 0 or not pre["exposure"] > 0:
+        # Every ratio divides by the pre-incident rate; the bootstrap is not run when that rate is zero or undefined.
+        reason = "no pre-incident conversion in this stratum" if pre["exposure"] > 0 else "no pre-incident exposure"
+        ratios = {key: None for key in STATISTICS}
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):  # replicates with no pre-incident conversion are dropped
+            clustered = pr.owner_clustered(records, ids, None)["other.repository"]
+        # Missing when no replicate was finite; a non-finite estimate is undefined as well.
+        ratios = {key: clustered[key] if key in clustered and math.isfinite(clustered[key]["estimate"]) else None
+                  for key in STATISTICS}
+        reason = "no finite bootstrap replicate"
     return dict(repositories=len(ids),
                 periods={p: dict(conversions=periods[p]["conversions"], exposure=periods[p]["exposure"]) for p in PERIODS},
                 ratios=ratios,
                 undefined=[key for key, value in ratios.items() if value is None],
                 undefined_reasons={key: reason for key, value in ratios.items() if value is None})
+
+
+def support(strata):
+    """Whether each stratum supports each wave: its rate ratio's interval lies above one. Acceptance only says the
+    report is complete; this says what it shows. A wave is not_supported when estimable with a lower bound at or
+    below one, and not_estimable when its ratio is undefined."""
+    verdict = lambda metric: "not_estimable" if metric is None else "supported" if metric["lower"] > 1 else "not_supported"
+    output = {name: dict(first_wave=verdict(s["ratios"].get("rr_m1")), second_wave=verdict(s["ratios"].get("rr_m1318")))
+              for name, s in strata.items()}
+    summary = dict(strata=len(output),
+                   estimable=sum(v["first_wave"] != "not_estimable" and v["second_wave"] != "not_estimable" for v in output.values()),
+                   first_wave_supported=sum(v["first_wave"] == "supported" for v in output.values()),
+                   second_wave_supported=sum(v["second_wave"] == "supported" for v in output.values()))
+    return output, summary
 
 
 def acceptance(strata):
@@ -153,8 +172,10 @@ def run(root):
     accepted = acceptance(output)
     if not accepted["passed"]:
         raise ValueError("Stratified waves fail acceptance:\n  " + "\n  ".join(accepted["problems"]))
+    verdicts, verdict_summary = support(output)
     result = dict(rule_version=RULE_VERSION, created_at_utc=datetime.now(timezone.utc).isoformat(), source_run=run_path,
-                  cuts=cuts, strata=output, acceptance=accepted, input_sha256=inputs_of(root, bound),
+                  cuts=cuts, strata=output, acceptance=accepted, support=verdicts, support_summary=verdict_summary,
+                  input_sha256=inputs_of(root, bound),
                   implementation_sha256={p: sha256(root / p) for p in IMPLEMENTATION},
                   interpretation="Ratios use the other-Action conversion rate and the repository share with a conversion, "
                                  "against each stratum's own pre-incident period; intervals resample repositories.")
