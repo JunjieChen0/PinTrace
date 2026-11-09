@@ -1,12 +1,13 @@
 """Score the independent annotation: annotator agreement, the disagreement sheet, then consensus against the pipeline.
 
 Usage:
-  python -B -X utf8 tools/annotation/score.py --answers A2=A2.csv --answers A3=A3.csv
+  python -B -X utf8 tools/annotation/score.py --answers A3=A3.csv --answers A4=A4.csv
       check the freeze, validate both answer files, report agreement and write the disagreement sheet
-  python -B -X utf8 tools/annotation/score.py --answers A2=A2.csv --answers A3=A3.csv --consensus consensus.csv
+  python -B -X utf8 tools/annotation/score.py --answers A3=A3.csv --answers A4=A4.csv --consensus consensus.csv
       also compare the consensus labels with the pipeline
 
-Exactly two annotators are scored. A1's formal file is excluded (protocol log, 2026-11-08) and A3 replaces A1.
+Exactly two annotators are scored. A1's formal file is excluded (protocol log, 2026-11-08) and A3 replaces A1; A2's
+formal file is excluded (protocol log, 2026-11-09) and A4 replaces A2.
 
 Nothing is read before ``freeze.verify`` passes. The disagreement sheet carries the two answers only, never the
 pipeline label, so the consensus discussion stays blind. S1 (the gold set) and S2 (the uniform sample) are always
@@ -32,7 +33,7 @@ import freeze  # noqa: E402
 from make_packet import TASKS  # noqa: E402
 
 PRIVATE = ROOT / "reports/human_validation_v2/private"
-STAGE = "freeze-4"
+STAGE = "freeze-5"
 CONFIDENCE = {"high", "medium", "low"}
 FAST_GAP_SECONDS = 2.0
 Z95 = 1.959963984540054
