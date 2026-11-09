@@ -212,5 +212,6 @@ def test_describe_reports_quartiles_and_shares():
             for v in (1, 2, 3, 4)]
     output = ca.describe(rows)
     assert output["git_commits_180d"]["median"] == 2.5
+    assert output["git_commits_180d"]["mean"] == 2.5 and output["mutable_share"]["mean"] == 0.5
     assert output["organization_share"]["successes"] == 2 and output["target_all_sha_share"]["successes"] == 1
     assert json.dumps(output)

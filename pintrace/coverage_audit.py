@@ -192,12 +192,13 @@ def wilson(successes, total):
 
 
 def describe(rows):
-    """Median and quartiles of each covariate, organisation share and the baseline pinned share of the target."""
+    """Mean, median and quartiles of each covariate, organisation share and the baseline pinned share of the target."""
     output = dict(repositories=len(rows))
     for key in COVARIATES:
         values = sorted(r[key] for r in rows if r.get(key) is not None)
         q = statistics.quantiles(values, n=4) if len(values) > 1 else values * 3
-        output[key] = dict(n=len(values), median=statistics.median(values) if values else None, q1=q[0] if q else None,
+        output[key] = dict(n=len(values), mean=statistics.mean(values) if values else None,
+                           median=statistics.median(values) if values else None, q1=q[0] if q else None,
                            q3=q[-1] if q else None)
     output["organization_share"] = wilson(sum(r.get("owner_type") == "Organization" for r in rows), len(rows))
     output["target_all_sha_share"] = wilson(sum(r.get("target_full_sha", 0) > 0 and r.get("target_mutable", 0) == 0
