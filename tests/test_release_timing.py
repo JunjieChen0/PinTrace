@@ -7,14 +7,21 @@ DOC = dict(
     observations=[dict(tag="v1.2.0", target=SHA.upper(), visit_date="2026-01-10T00:00:00+00:00"),
                   dict(tag="v1.2.0", target=SHA, visit_date="2026-01-05T00:00:00+00:00"),
                   dict(tag="v1", target=OTHER, visit_date="2026-03-01T00:00:00+00:00")],
-    release_records=[dict(tag="v1.3.0", target=OTHER, published_at="2026-02-01T00:00:00Z")])
+    release_records=[dict(tag="v1.3.0", target=OTHER, published_at="2026-02-01T00:00:00Z", immutable=True, evidence_grade="A"),
+                     # A mutable release: its target was read at collection time, so its publication date does not date the binding.
+                     dict(tag="v1.4.0", target=OTHER, published_at="2026-01-01T00:00:00Z", immutable=False, evidence_grade="C")])
 JAN5, FEB1, MAR1 = (rt._time(s) for s in ("2026-01-05T00:00:00Z", "2026-02-01T00:00:00Z", "2026-03-01T00:00:00Z"))
 
 
-def test_earliest_evidence_takes_the_first_visit_or_publication():
+def test_earliest_evidence_takes_the_first_visit_or_immutable_publication():
     first = rt.earliest_evidence(DOC)
     assert first[(SHA, "v1.2.0")] == JAN5
     assert first[(OTHER, "v1.3.0")] == FEB1 and first[(OTHER, "v1")] == MAR1
+
+
+def test_a_mutable_release_does_not_date_its_binding_unless_asked():
+    assert (OTHER, "v1.4.0") not in rt.earliest_evidence(DOC)
+    assert rt.earliest_evidence(DOC, mutable_releases=True)[(OTHER, "v1.4.0")] == rt._time("2026-01-01T00:00:00Z")
 
 
 def test_timed_index_keeps_only_bindings_evidenced_by_the_moment():

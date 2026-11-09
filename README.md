@@ -12,7 +12,8 @@
 
 | 代码标签 | Zenodo 版本 | 版本 DOI | 说明 |
 | --- | --- | --- | --- |
-| `v1.1.1` | 1.8.2 | [10.5281/zenodo.24082196](https://doi.org/10.5281/zenodo.24082196) | 修订稿再投稿版（JSEP major revision） |
+| `v1.1.2` | 1.8.3 | [10.5281/zenodo.24088740](https://doi.org/10.5281/zenodo.24088740) | 修订稿再投稿版（JSEP major revision）：发布时点只用同期证据、对照比较扩展到 18 个月、补充检验、完整正式入口所需输入 |
+| `v1.1.1` | 1.8.2 | [10.5281/zenodo.24082196](https://doi.org/10.5281/zenodo.24082196) | 修订稿中间版本（被 1.8.3 取代） |
 | `v1.1.1` | 1.8.1 | [10.5281/zenodo.24078055](https://doi.org/10.5281/zenodo.24078055) | 修订稿中间版本 |
 | `v1.1.0` | 1.8.0 | [10.5281/zenodo.24076835](https://doi.org/10.5281/zenodo.24076835) | 新增覆盖审计、分层分析与独立标注 |
 | `v1.0.8` | 1.7.0 | [10.5281/zenodo.23535531](https://doi.org/10.5281/zenodo.23535531) | 初投稿 |
@@ -26,7 +27,7 @@
 | 固定期、上游机会与维护 | `risksets`、`opportunities`、`opportunity_join`、`maintenance_scope`、`maintenance_activity` |
 | 匹配对照 | `control_frame`、`control_baseline`、`control_match`、`control_measurement`、`control_compare` |
 | 统计与推断 | `formal_stats`、`formal_extensions`、`formal_activity`、`formal_competing`、`formal_placebo`、`formal_sensitivity`、`formal_robustness`、`formal_acceptance` |
-| 修订阶段的检查 | `post_review`（事前基线、集中度与第二波）、`denominator_audit`（分母口径）、`release_timing`（上游发布时间） |
+| 修订阶段的检查 | `post_review`（事前基线、集中度与第二波）、`denominator_audit`（分母口径）、`release_timing`（发布身份的同期证据：只用存档快照和不可变发布给 tag 绑定定时）、`revision_checks`（尾窗、仓库月分母、按提交计数的第二波、依赖列表与测量端点交叉） |
 | 依赖图覆盖审计 | `coverage_crawl`（爬取 `tj-actions/changed-files` 的公开依赖列表）、`coverage_audit`（抽样、资格判定、覆盖率与特征比较） |
 | 分层敏感性 | `stratified_waves`（两次浪潮在活跃度、所有者类型与基线固定状态各层中的比率） |
 | 效度与可复现 | `validity_golden`、`validity_reexport`、`validity_goldset` |
@@ -84,6 +85,8 @@ python -m pintrace.validity_reexport
 python -m pintrace.post_review --working
 python -m pintrace.denominator_audit
 python -m pintrace.release_timing
+python -m pintrace.control_compare               # 匹配对照，覆盖 18 个月的序列
+python -m pintrace.revision_checks
 python -m pintrace.stratified_waves
 python -m pintrace.coverage_crawl                 # 依赖列表爬取，约 2.5 秒一页，可用 --resume 续爬
 python -m pintrace.coverage_audit sample          # 固定 seed 抽取 300 个仓库
@@ -91,11 +94,12 @@ python -m pintrace.coverage_audit collect         # 克隆并按队列的基线�
 python -m pintrace.coverage_audit summarize
 ```
 
-已发布的结果可以不重算而直接核对：
+已发布的结果可以直接核对。前两条只核对哈希与验收条件，不重新估计；要重算估计值，运行上面不带 `check` 的命令，再与已发布报告比较。`revision_checks --check` 会重新计算并逐项比较：
 
 ```powershell
-python -m pintrace.coverage_audit check           # 输入与实现文件的哈希，以及重算的估计值
-python -m pintrace.stratified_waves --check       # 重算各层并与已发布报告比较
+python -m pintrace.coverage_audit check           # 爬取内容、样本与输入/实现文件的哈希（不重算估计）
+python -m pintrace.stratified_waves --check       # 输入哈希与已发布报告的验收条件（不重算估计）
+python -m pintrace.revision_checks --check        # 重算尾窗、分母与交叉表并与已发布报告比较
 python tools/annotation/freeze.py freeze-6 --check
 ```
 

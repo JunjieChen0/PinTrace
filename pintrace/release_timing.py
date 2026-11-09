@@ -3,7 +3,9 @@
 The main analysis (formal_extensions.tag_index) merges tag bindings from every archive visit and release record,
 whatever their date, so a commit adopted first and tagged later would count as a release. This audit repeats the
 release classifications with a time-aware index that keeps, for each moment, only the bindings evidenced at or
-before it: an archive visit that saw the tag at that commit, or the publication time of a release at that commit.
+before it: an archive visit that saw the tag at that commit, or the publication of an immutable release at that
+commit. A mutable release record gives the tag's commit when it was collected, not when it was published, so its
+publication does not date the binding (release-timing-v2; v1 used every publication and is reported alongside).
 
 It covers the release routes of the maintenance analysis (what "another SHA" means) and the advisory-line labels of
 RQ1 (first responses and the target trajectory). Evidence that arrives later than an adoption does not show the tag
@@ -23,8 +25,8 @@ from pathlib import Path
 from . import formal_extensions as fx
 from .formal_common import WORKING_MANIFEST, sha256, write_json
 
-RULE_VERSION = "release-timing-v1"
-BATCH = "release-timing-v1"
+RULE_VERSION = "release-timing-v2"
+BATCH = "release-timing-v2"
 TARGET = "tj-actions/changed-files"
 
 
@@ -38,11 +40,26 @@ def _time(value):
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
 
 
-def earliest_evidence(document):
-    """(lowercase SHA, tag) -> earliest time a binding of that tag to that commit is evidenced."""
+def dated_by_publication(record):
+    """True when a release record's publication time also dates its tag-to-commit binding.
+
+    The target of a release record is the tag's commit when the record was collected. Only an immutable release
+    (grade A) guarantees that the tag pointed there since publication; a mutable release's tag may have been moved
+    after publication, which is exactly what happened to this study's target Action.
+    """
+    return record.get("immutable") is True and record.get("evidence_grade") == "A"
+
+
+def earliest_evidence(document, mutable_releases=False):
+    """(lowercase SHA, tag) -> earliest time a binding of that tag to that commit is evidenced.
+
+    Evidence is an archive visit that saw the binding, or the publication of an immutable release. With
+    ``mutable_releases`` the publication of every release dates its binding (the rule of release-timing-v1).
+    """
     first = {}
+    releases = [r for r in document.get("release_records", []) if mutable_releases or dated_by_publication(r)]
     for row, field in [*((r, "visit_date") for r in document.get("observations", [])),
-                       *((r, "published_at") for r in document.get("release_records", []))]:
+                       *((r, "published_at") for r in releases)]:
         when = _time(row.get(field))
         if row.get("target") and row.get("tag") and when is not None:
             key = (row["target"].lower(), row["tag"])
@@ -95,13 +112,16 @@ def route_timing(rows, entries, indices, timed):
             evidence = timing(indices[upstream].get(sha, ()), sha, timed[upstream].evidence, adopted)
             strict = fx.adopted_route(entry, outcome, timed[upstream].at(adopted))
         output.append(dict(repository_id=row["repository_id"], role=row["role"], grade=row["evidence_grade"],
-                           route=merged, strict_route=strict, evidence=evidence))
+                           upstream=upstream, route=merged, strict_route=strict, evidence=evidence))
     return output
 
 
 def summarize_routes(detail):
     channel = lambda key: sum(d[key] in {"opportunity_target", "later_release"} for d in detail)
+    moved = [d for d in detail if d["route"] != d["strict_route"]]
     return dict(changed_entries=len(detail),
+                moved=dict(entries=len(moved), repositories=len({d.get("repository_id") for d in moved}),
+                           by_upstream_and_role=dict(Counter(f"{d.get('upstream')}|{d.get('role')}" for d in moved))),
                 evidence=dict(Counter(f"{d['route']}.{d['evidence']}" for d in detail)),
                 routes=dict(Counter(d["route"] for d in detail)), strict_routes=dict(Counter(d["strict_route"] for d in detail)),
                 channel=channel("route"), strict_channel=channel("strict_route"),
@@ -157,7 +177,10 @@ def coverage(document):
     """First dated tag evidence of an upstream: archive visits and release publications."""
     visits = sorted(r["visit_date"] for r in document.get("observations", []) if r.get("visit_date"))
     releases = sorted(r["published_at"] for r in document.get("release_records", []) if r.get("published_at"))
-    return dict(first_archive_visit=visits[0] if visits else None, first_release_publication=releases[0] if releases else None)
+    immutable = sorted(r["published_at"] for r in document.get("release_records", [])
+                       if r.get("published_at") and dated_by_publication(r))
+    return dict(first_archive_visit=visits[0] if visits else None, first_release_publication=releases[0] if releases else None,
+                first_immutable_release_publication=immutable[0] if immutable else None)
 
 
 # ---------------------------------------------------------------- run
@@ -169,11 +192,14 @@ def run(root):
     bound = fx._verify(root, run_record, WORKING_MANIFEST, results)
     frozen = json.loads((root / WORKING_MANIFEST).read_text(encoding="utf-8"))
     formal = {str(i) for i in frozen["formal_population"]["formal_eligible_repository_ids"]}
-    indices, timed = {}, {}
+    indices, timed, published_dated, release_evidence = {}, {}, {}, Counter()
     for path in (p for p in bound if p.startswith(fx.UPSTREAM)):
         document = json.loads((root / path).read_text(encoding="utf-8"))
         name = document["summary"]["repository"]
         indices[name], timed[name] = fx.tag_index(document), TimedIndex(earliest_evidence(document))
+        published_dated[name] = TimedIndex(earliest_evidence(document, mutable_releases=True))
+        if name == TARGET:
+            release_evidence.update("immutable" if dated_by_publication(r) else "mutable" for r in document.get("release_records", []))
     csv.field_size_limit(2**31 - 1)
     with (root / (results + "rq3_maintenance_records.csv")).open(encoding="utf-8", newline="") as stream:
         rows = [row for row in csv.DictReader(stream) if row["population"] == "formal"]
@@ -185,16 +211,24 @@ def run(root):
         raise ValueError("Route timing does not reproduce the published changed entries")
     with (root / (results + "rq12_repository_records.jsonl")).open(encoding="utf-8") as stream:
         records = [json.loads(line) for line in stream if line.strip()]
-    rq1 = summarize_rq1([rq1_timing(r, indices[TARGET], timed[TARGET]) for r in records if r["repository_id"] in formal])
+    formal_records = [r for r in records if r["repository_id"] in formal]
+    rq1 = summarize_rq1([rq1_timing(r, indices[TARGET], timed[TARGET]) for r in formal_records])
     if rq1["pin"]["first_target"] != published["response_targets"]["pin"]:
         raise ValueError("Merged-index first responses do not reproduce the published RQ1 pin lines")
+    # The rule of release-timing-v1, kept so the effect of dating mutable releases by publication can be reported.
+    publication_dated = dict(routes=summarize_routes(route_timing(rows, entries, indices, published_dated)),
+                             rq1=summarize_rq1([rq1_timing(r, indices[TARGET], published_dated[TARGET]) for r in formal_records]))
     result = dict(rule_version=RULE_VERSION, created_at_utc=datetime.now(timezone.utc).isoformat(),
                   implementation_sha256=sha256(Path(__file__)), source_run=run_path, input_sha256=bound,
-                  routes=routes, rq1=rq1,
+                  routes=routes, rq1=rq1, publication_dated=publication_dated,
+                  target_release_records=dict(release_evidence),
                   target_coverage=coverage(json.loads((root / fx.UPSTREAM / "tj-actions__changed-files.json").read_text(encoding="utf-8"))),
-                  interpretation="'before' means a binding of a tag to the adopted commit, or the release itself, was "
-                                 "evidenced at or before adoption. 'after' means the first evidence is later, which can "
-                                 "reflect archive coverage rather than a later tag.")
+                  interpretation="'before' means a binding of a tag to the adopted commit was evidenced at or before adoption "
+                                 "by an archive visit or by the publication of an immutable release, or that the opportunity "
+                                 "release itself was available. 'after' means the first such evidence is later, which can "
+                                 "reflect archive coverage rather than a later tag. 'publication_dated' repeats the analysis "
+                                 "with every release publication dating its binding, which back-dates the current target of "
+                                 "a mutable release.")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     directory = root / "data/derived" / BATCH / "runs" / stamp
     write_json(directory / "release_timing.json", result)
