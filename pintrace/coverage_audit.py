@@ -266,18 +266,40 @@ def apply_identity(rows, anchor):
     return output
 
 
-def estimate(listed, frame_listed, formal_listed, sample_rows, eligible=lambda row: True):
+def frame_crosstab(root, dependents, formal):
+    """Source-frame repositories (aliases merged by ID) by baseline status, formal inclusion and current listing.
+
+    The formal cohort is every frame repository that is confirmed and passes the identity audit, so a listed frame
+    repository that is eligible but not formal cannot occur; a confirmed one outside the cohort failed the identity
+    audit. Returns the table and U, the listed frame repositories outside the cohort whose eligibility is unknown
+    (confirmed but identity unknown, inaccessible, or unparsed); U enters the coverage bounds."""
+    groups = {}
+    for path in sorted((Path(root) / "data/derived/cohort-v1/baselines").glob("*.json")):
+        summary = json.loads(path.read_text(encoding="utf-8"))["summary"]
+        groups.setdefault(summary.get("repository_id") or "name:" + summary["repository"].lower(), []).append(summary)
+    table = Counter()
+    for identity, rows in groups.items():
+        listed = any(r["repository"].lower() in dependents or (r.get("canonical_repository") or "").lower() in dependents
+                     for r in rows)
+        table[("|".join(sorted({r["status"] for r in rows})), identity in formal, listed)] += 1
+    unknown = sum(n for (status, is_formal, listed), n in table.items()
+                  if listed and not is_formal and status != "not_at_baseline")
+    return [dict(status=s, formal=f, listed=l, repositories=n) for (s, f, l), n in sorted(table.items())], unknown
+
+
+def estimate(listed, frame_listed, formal_listed, sample_rows, eligible=lambda row: True, frame_unknown=0):
     """Pre-incident dependents among current dependents, and the formal cohort's share of them. ``eligible`` narrows
     which confirmed rows count (for example non-forks); the denominator stays every resolved sampled row.
 
     ``missing_bounds`` treats every unresolved sampled row (failed, inaccessible, unparsed or of unknown identity) as
-    not eligible (low) and as eligible (high), with every planned row in the denominator."""
+    not eligible (high coverage) and as eligible (low coverage), with every planned row in the denominator; the low
+    coverage bound also counts the ``frame_unknown`` listed frame repositories as eligible."""
     statuses = Counter(r["status"] for r in sample_rows)
     successes = sum(r["status"] == "confirmed" and eligible(r) for r in sample_rows)
     resolved = sum(statuses[s] for s in RESOLVED)
     rate = wilson(successes, resolved)
     outside = listed - frame_listed
-    scale = lambda p: formal_listed + p * outside
+    scale = lambda p, extra=0: formal_listed + extra + p * outside
     planned, unknown = len(sample_rows), len(sample_rows) - resolved
     low_rate, high_rate = successes / planned, (successes + unknown) / planned
     return dict(sample_status=dict(statuses), pre_incident_rate=rate, dependents_outside_frame=outside,
@@ -285,8 +307,9 @@ def estimate(listed, frame_listed, formal_listed, sample_rows, eligible=lambda r
                                                     high=rate["high"] * outside) if rate else None,
                 formal_coverage=dict(estimate=formal_listed / scale(rate["estimate"]), low=formal_listed / scale(rate["high"]),
                                      high=formal_listed / scale(rate["low"])) if rate else None,
-                missing_bounds=dict(planned=planned, unknown=unknown, rate_low=low_rate, rate_high=high_rate,
-                                    coverage_low=formal_listed / scale(high_rate), coverage_high=formal_listed / scale(low_rate)))
+                missing_bounds=dict(planned=planned, unknown=unknown, frame_unknown=frame_unknown, rate_low=low_rate,
+                                    rate_high=high_rate, coverage_low=formal_listed / scale(high_rate, frame_unknown),
+                                    coverage_high=formal_listed / scale(low_rate)))
 
 
 # ---------------------------------------------------------------- commands
@@ -370,6 +393,12 @@ def run_summarize(root, crawl):
     formal = formal_records(root)
     formal_listed = sum(r["repository"].lower() in dependents or (r.get("canonical_repository") or "").lower() in dependents
                         for r in formal.values())
+    crosstab, frame_unknown = frame_crosstab(root, dependents, set(formal))
+    frame_listed = len(dependents & frame)
+    if frame_listed != sum(row["repositories"] for row in crosstab if row["listed"]):
+        raise ValueError("Listed frame names and listed frame repositories differ; an alias is listed twice")
+    if formal_listed != sum(row["repositories"] for row in crosstab if row["listed"] and row["formal"]):
+        raise ValueError("Listed formal repositories differ between the cohort records and the frame table")
     anchor = datetime.fromisoformat(tomllib.loads((root / "study.toml").read_text(encoding="utf-8"))["study"]["event_anchor"]
                                     .replace("Z", "+00:00"))
     # A failed collection is not saved; it stays in the sample as collection_failed so that it reaches the bounds.
@@ -386,7 +415,8 @@ def run_summarize(root, crawl):
                   crawl=dict(directory=crawl.relative_to(root).as_posix(), pages=len(pages), total_shown=pages[0]["total_shown"],
                              first_fetch=pages[0]["fetched_at_utc"], last_fetch=pages[-1]["fetched_at_utc"],
                              listed_unique=len(dependents), dependents_sha256=digest(crawl / "dependents.csv")),
-                  frame=dict(names=len(frame), listed=len(dependents & frame)),
+                  frame=dict(names=len(frame), listed=frame_listed),
+                  frame_crosstab=crosstab,
                   formal=dict(repositories=len(formal), listed=formal_listed),
                   sample=dict(planned=len(sample), collected=sum(r["status"] != "collection_failed" for r in sample), seed=SEED),
                   identity_excluded=dict(all=sum(r["status"] == "historical_identity_unknown" for r in sample),
@@ -395,14 +425,14 @@ def run_summarize(root, crawl):
                   population="Pre-incident dependents that the dependents list still shows. formal_coverage is the formal "
                              "repositories still listed over those plus the estimate outside the frame; the share of all "
                              "pre-incident dependents, including those that removed the Action, is not observable here.",
-                  **estimate(len(dependents), len(dependents & frame), formal_listed, sample),
+                  **estimate(len(dependents), frame_listed, formal_listed, sample, frame_unknown=frame_unknown),
                   # The page shows a larger count than it lists; scaling to that count is a sensitivity bound.
-                  coverage_if_count_shown=estimate(pages[0]["total_shown"], len(dependents & frame), formal_listed,
+                  coverage_if_count_shown=estimate(pages[0]["total_shown"], frame_listed, formal_listed,
                                                    sample)["formal_coverage"],
                   # The formal cohort holds no forks; forks inherit workflows, so the like-for-like figure excludes them.
                   formal_forks=sum(bool(r.get("current_fork")) for r in formal.values()),
                   sample_forks=sum(bool(r.get("current_fork")) for r in sample if r["status"] == "confirmed"),
-                  non_fork=estimate(len(dependents), len(dependents & frame), formal_listed, sample, not_fork),
+                  non_fork=estimate(len(dependents), frame_listed, formal_listed, sample, not_fork, frame_unknown),
                   characteristics=dict(formal=describe(cohort_rows),
                                        sample_pre_incident=describe([r for r in sample if r["status"] == "confirmed"]),
                                        sample_pre_incident_non_fork=describe(non_fork_pre),

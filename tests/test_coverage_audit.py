@@ -182,6 +182,29 @@ def test_run_check_passes_then_names_a_changed_eligibility_record(tmp_path, monk
     assert not result["ok"] and result["differences"] == [ca.output_path(root, "b/y").relative_to(root).as_posix()]
 
 
+def test_frame_crosstab_merges_aliases_and_counts_listed_unknowns(tmp_path):
+    base = tmp_path / "data/derived/cohort-v1/baselines"
+    for name, identity, canonical, status in (("a/old", "1", "a/new", "confirmed"), ("a/new", "1", "a/new", "confirmed"),
+                                              ("b/x", "2", "b/x", "confirmed"), ("c/y", "3", "c/y", "not_at_baseline"),
+                                              ("d/z", None, None, "inaccessible_unknown"), ("e/w", "5", "e/w", "confirmed")):
+        ca.save_detail(base / (name.replace("/", "__") + ".json"),
+                       dict(summary=dict(repository=name, repository_id=identity, canonical_repository=canonical, status=status)))
+    table, unknown = ca.frame_crosstab(tmp_path, {"a/new", "c/y", "d/z", "e/w"}, {"1", "2"})
+    cells = {(r["status"], r["formal"], r["listed"]): r["repositories"] for r in table}
+    assert cells == {("confirmed", True, True): 1, ("confirmed", True, False): 1, ("not_at_baseline", False, True): 1,
+                     ("inaccessible_unknown", False, True): 1, ("confirmed", False, True): 1}
+    assert unknown == 2  # d/z is inaccessible, e/w is confirmed but outside the cohort (identity unknown)
+
+
+def test_frame_unknowns_lower_only_the_low_coverage_bound():
+    sample = [dict(status="confirmed")] * 20 + [dict(status="not_at_baseline")] * 80
+    plain = ca.estimate(listed=1_000, frame_listed=0, formal_listed=50, sample_rows=sample)
+    widened = ca.estimate(listed=1_000, frame_listed=0, formal_listed=50, sample_rows=sample, frame_unknown=10)
+    assert widened["formal_coverage"] == plain["formal_coverage"]
+    assert widened["missing_bounds"]["coverage_high"] == plain["missing_bounds"]["coverage_high"]
+    assert widened["missing_bounds"]["coverage_low"] == pytest.approx(50 / (50 + 10 + 0.2 * 1_000))
+
+
 def test_describe_reports_quartiles_and_shares():
     rows = [dict(git_commits_180d=v, baseline_workflow_files=1, action_references=2, mutable_share=0.5,
                  owner_type="Organization" if v % 2 else "User",

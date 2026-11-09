@@ -35,6 +35,36 @@ def test_unstratified_estimate_must_match_the_published_one():
                                                "share_ratio_m1318": {"estimate": 2.0}}}, published)
 
 
+def stratum(**changes):
+    metric = dict(estimate=2.0, lower=1.1, upper=4.0, valid_replicates=2000, requested_replicates=2000)
+    base = dict(repositories=10, periods={p: dict(conversions=3, exposure=50.0) for p in sw.PERIODS},
+                ratios={k: dict(metric) for k in sw.STATISTICS}, undefined_reasons={})
+    return {**base, **changes}
+
+
+def test_acceptance_passes_a_complete_stratum_and_names_each_gap():
+    assert sw.acceptance({"ok": stratum()})["passed"]
+    empty = stratum(periods={p: dict(conversions=0, exposure=0.0) for p in sw.PERIODS})
+    thin = stratum(ratios={k: dict(estimate=2.0, lower=1.0, upper=3.0, valid_replicates=1000, requested_replicates=2000)
+                           for k in sw.STATISTICS})
+    silent = stratum(ratios={**stratum()["ratios"], "rr_m1318": None})
+    explained = stratum(ratios={**stratum()["ratios"], "rr_m1318": None},
+                        undefined_reasons={"rr_m1318": "no pre-incident conversion in this stratum"})
+    result = sw.acceptance({"empty": empty, "thin": thin, "silent": silent, "explained": explained})
+    assert not result["passed"]
+    assert any(p.startswith("empty: pre") for p in result["problems"])
+    assert any(p.startswith("thin: rr_m1 rests on 1000") for p in result["problems"])
+    assert "silent: rr_m1318 is undefined without a reason" in result["problems"]
+    assert not any(p.startswith("explained") for p in result["problems"])
+
+
+def test_report_passes_acceptance():
+    path = ROOT / "reports/stratified_waves.json"
+    if not path.exists():
+        pytest.skip("stratified_waves.json not built; run python -m pintrace.stratified_waves --check on real data")
+    assert sw.acceptance(json.loads(path.read_text(encoding="utf-8"))["strata"])["passed"]
+
+
 def test_report_strata_add_up_to_the_cohort():
     path = ROOT / "reports/stratified_waves.json"
     if not path.exists():
