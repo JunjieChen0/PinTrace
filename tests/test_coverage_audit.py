@@ -135,6 +135,53 @@ def test_non_fork_estimate_keeps_forks_in_the_denominator():
     assert result["pre_incident_rate"]["successes"] == 6 and result["pre_incident_rate"]["total"] == 20
 
 
+def test_standardized_differences_match_hand_computed_values():
+    assert ca.smd_continuous([1, 2, 3], [2, 3, 4]) == pytest.approx(-1.0)
+    assert ca.smd_continuous([1], [2, 3]) is None and ca.smd_continuous([1, 1], [1, 1]) is None
+    assert ca.smd_proportion(0.5, 0.5) == 0 and ca.smd_proportion(0.8, 0.2) == pytest.approx(0.6 / 0.4)
+    cohort = [dict(git_commits_180d=v, owner_type="Organization") for v in (0, 1, 2)]
+    sample = [dict(git_commits_180d=v, owner_type="User") for v in (0, 0, 1)]
+    output = ca.standardized_differences(cohort, sample)
+    assert output["git_commits_180d"]["transform"] == "log1p" and output["git_commits_180d"]["smd"] > 0
+    assert output["organization_share"]["smd"] is None  # both shares are 0 or 1, so the pooled SD is 0
+
+
+def project(tmp_path, monkeypatch):
+    """A synthetic project root holding every input the summary binds."""
+    root = tmp_path / "root"
+    for path in (*ca.FIXED_INPUTS, *ca.IMPLEMENTATION):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("x\n", encoding="utf-8")
+    directory = crawl(root / ca.OUTPUT / "crawl-1", three_pages(), monkeypatch)
+    (root / ca.OUTPUT / "sample.csv").write_text("position,repository\n0,b/y\n", encoding="utf-8")
+    (root / ca.OUTPUT / "sample_manifest.json").write_text(json.dumps(dict(
+        crawl=directory.relative_to(root).as_posix(), size=1, sample_sha256=ca.digest(root / ca.OUTPUT / "sample.csv"),
+        dependents_sha256=ca.digest(directory / "dependents.csv"))), encoding="utf-8")
+    ca.save_detail(ca.output_path(root, "b/y"), dict(summary=dict(repository="b/y", status="not_at_baseline")))
+    (root / "data/derived/cohort-v1/baselines").mkdir(parents=True)
+    report = dict(crawl=dict(directory=directory.relative_to(root).as_posix()), input_sha256=ca.bound_inputs(root, directory),
+                  implementation_sha256={p: ca.digest(root / p) for p in ca.IMPLEMENTATION})
+    (root / "reports").mkdir(exist_ok=True)
+    (root / "reports/coverage_audit.json").write_text(json.dumps(report), encoding="utf-8")
+    return root, directory
+
+
+def test_check_sample_manifest_rejects_a_changed_sample(tmp_path, monkeypatch):
+    root, directory = project(tmp_path, monkeypatch)
+    ca.check_sample_manifest(root, directory)
+    (root / ca.OUTPUT / "sample.csv").write_text("position,repository\n0,c/z\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="sample manifest"):
+        ca.check_sample_manifest(root, directory)
+
+
+def test_run_check_passes_then_names_a_changed_eligibility_record(tmp_path, monkeypatch):
+    root, _ = project(tmp_path, monkeypatch)
+    assert ca.run_check(root)["ok"]
+    ca.save_detail(ca.output_path(root, "b/y"), dict(summary=dict(repository="b/y", status="confirmed")))
+    result = ca.run_check(root)
+    assert not result["ok"] and result["differences"] == [ca.output_path(root, "b/y").relative_to(root).as_posix()]
+
+
 def test_describe_reports_quartiles_and_shares():
     rows = [dict(git_commits_180d=v, baseline_workflow_files=1, action_references=2, mutable_share=0.5,
                  owner_type="Organization" if v % 2 else "User",

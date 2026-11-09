@@ -20,6 +20,7 @@ import csv
 import gzip
 import hashlib
 import json
+import math
 import random
 import statistics
 import tomllib
@@ -47,6 +48,12 @@ SAMPLE_SIZE = 300
 Z = 1.959963984540054
 RESOLVED = ("confirmed", "not_at_baseline", "no_pre_event_history")
 COVARIATES = ("git_commits_180d", "baseline_workflow_files", "action_references", "mutable_share")
+COUNT_COVARIATES = ("git_commits_180d", "baseline_workflow_files", "action_references")
+IMPLEMENTATION = ("pintrace/coverage_audit.py", "pintrace/coverage_crawl.py", "pintrace/baseline.py", "pintrace/cohort.py",
+                  "pintrace/control_baseline.py", "pintrace/github.py", "pintrace/history.py", "pintrace/pilot.py",
+                  "pintrace/workflow.py")
+FIXED_INPUTS = ("study.toml", "reports/candidate_source_membership.csv", "reports/working_input_manifest.json",
+                "data/derived/control-v1/treated_covariates.json", f"{OUTPUT}/sample.csv", f"{OUTPUT}/sample_manifest.json")
 
 
 # ---------------------------------------------------------------- frame and sample
@@ -198,6 +205,35 @@ def describe(rows):
     return output
 
 
+def smd_continuous(first, second):
+    """Standardized mean difference, first minus second, over the pooled standard deviation; None if undefined."""
+    if len(first) < 2 or len(second) < 2:
+        return None
+    pooled = ((statistics.variance(first) + statistics.variance(second)) / 2) ** 0.5
+    return (statistics.mean(first) - statistics.mean(second)) / pooled if pooled else None
+
+
+def smd_proportion(first, second):
+    pooled = ((first * (1 - first) + second * (1 - second)) / 2) ** 0.5
+    return (first - second) / pooled if pooled else None
+
+
+def standardized_differences(cohort, sample):
+    """Cohort minus sample. Counts are compared on log(1 + x) because they are heavily skewed."""
+    output = {}
+    for key in COVARIATES:
+        transform = math.log1p if key in COUNT_COVARIATES else (lambda v: v)
+        values = lambda rows: [transform(r[key]) for r in rows if r.get(key) is not None]
+        output[key] = dict(smd=smd_continuous(values(cohort), values(sample)),
+                           transform="log1p" if key in COUNT_COVARIATES else "none")
+    for key, test in (("organization_share", lambda r: r.get("owner_type") == "Organization"),
+                      ("target_all_sha_share", lambda r: r.get("target_full_sha", 0) > 0 and r.get("target_mutable", 0) == 0)):
+        share = lambda rows: sum(map(test, rows)) / len(rows)
+        output[key] = dict(smd=smd_proportion(share(cohort), share(sample)) if cohort and sample else None,
+                           transform="proportion")
+    return output
+
+
 def not_fork(row):
     return not row.get("current_fork")
 
@@ -290,8 +326,45 @@ def run_collect(root, workers):
         return Counter(job.result()["status"] for job in as_completed(jobs))
 
 
+def bound_inputs(root, crawl):
+    """Every file the summary reads, with its SHA-256. pages.jsonl binds each raw page through its recorded hash,
+    which verify_crawl re-checks."""
+    root = Path(root)
+    paths = [*FIXED_INPUTS, *(crawl.relative_to(root).as_posix() + "/" + n for n in ("pages.jsonl", "dependents.csv", "complete.json"))]
+    paths += [output_path(root, n).relative_to(root).as_posix() for n in read_sample(root) if output_path(root, n).exists()]
+    paths += sorted(p.relative_to(root).as_posix() for p in (root / "data/derived/cohort-v1/baselines").glob("*.json"))
+    return {path: digest(root / path) for path in paths}
+
+
+def check_sample_manifest(root, crawl):
+    """The sample being summarized is the one drawn, from this crawl, from this dependents list."""
+    manifest = json.loads((Path(root) / OUTPUT / "sample_manifest.json").read_text(encoding="utf-8"))
+    if manifest["crawl"] != crawl.relative_to(root).as_posix():
+        raise ValueError(f"Sample was drawn from {manifest['crawl']}, not {crawl}")
+    if manifest["sample_sha256"] != digest(Path(root) / OUTPUT / "sample.csv"):
+        raise ValueError("sample.csv differs from the sample manifest")
+    if manifest["dependents_sha256"] != digest(crawl / "dependents.csv"):
+        raise ValueError("dependents.csv differs from the list the sample was drawn from")
+    if manifest["size"] != len(read_sample(root)):
+        raise ValueError("Sample size differs from the sample manifest")
+
+
+def run_check(root):
+    """Recompute every bound hash of reports/coverage_audit.json and re-verify the crawl; lists any difference."""
+    root = Path(root)
+    report = json.loads((root / "reports/coverage_audit.json").read_text(encoding="utf-8"))
+    crawl = root / report["crawl"]["directory"]
+    verify_crawl(crawl)
+    check_sample_manifest(root, crawl)
+    recorded = {**report["input_sha256"], **report["implementation_sha256"]}
+    current = {**bound_inputs(root, crawl), **{p: digest(root / p) for p in IMPLEMENTATION}}
+    differences = sorted(p for p in recorded.keys() | current.keys() if recorded.get(p) != current.get(p))
+    return dict(ok=not differences, files=len(recorded), differences=differences)
+
+
 def run_summarize(root, crawl):
     root = Path(root)
+    check_sample_manifest(root, crawl)
     dependents = {name.lower() for name in read_dependents(crawl)}
     frame = frame_names(root)
     formal = formal_records(root)
@@ -303,6 +376,7 @@ def run_summarize(root, crawl):
     saved = [json.loads(output_path(root, name).read_text(encoding="utf-8"))["summary"] if output_path(root, name).exists()
              else dict(repository=name, status="collection_failed") for name in read_sample(root)]
     sample = apply_identity(saved, anchor)
+    non_fork_pre = [r for r in sample if r["status"] == "confirmed" and not_fork(r)]
     covariates = {str(r["repository_id"]): r for r in
                   json.loads((root / "data/derived/control-v1/treated_covariates.json").read_text(encoding="utf-8"))}
     cohort_rows = [dict(covariates[i], target_full_sha=formal[i].get("target_full_sha", 0),
@@ -331,9 +405,10 @@ def run_summarize(root, crawl):
                   non_fork=estimate(len(dependents), len(dependents & frame), formal_listed, sample, not_fork),
                   characteristics=dict(formal=describe(cohort_rows),
                                        sample_pre_incident=describe([r for r in sample if r["status"] == "confirmed"]),
-                                       sample_pre_incident_non_fork=describe([r for r in sample if r["status"] == "confirmed"
-                                                                              and not_fork(r)])),
-                  implementation_sha256=digest(Path(__file__)),
+                                       sample_pre_incident_non_fork=describe(non_fork_pre),
+                                       standardized_difference_non_fork=standardized_differences(cohort_rows, non_fork_pre)),
+                  input_sha256=bound_inputs(root, crawl),
+                  implementation_sha256={path: digest(root / path) for path in IMPLEMENTATION},
                   scope="Current dependents only: pre-incident dependents that later removed the Action are not listed.")
     save_detail(root / OUTPUT / "runs" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json"), result)
     save_detail(root / "reports/coverage_audit.json", result)
@@ -342,7 +417,7 @@ def run_summarize(root, crawl):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("sample", "collect", "summarize"))
+    parser.add_argument("command", choices=("sample", "collect", "summarize", "check"))
     parser.add_argument("--crawl")
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
@@ -354,6 +429,11 @@ def main():
         print(json.dumps(dict(sampled=run_sample(root, crawl))))
     elif args.command == "collect":
         print(json.dumps(dict(run_collect(root, args.workers))))
+    elif args.command == "check":
+        result = run_check(root)
+        print(json.dumps(result, indent=2))
+        if not result["ok"]:
+            raise SystemExit(1)
     else:
         result = run_summarize(root, crawl)
         print(json.dumps({k: result[k] for k in ("crawl", "frame", "formal", "sample_status", "pre_incident_rate", "formal_coverage")},
