@@ -154,6 +154,11 @@ def test_freeze_5_adds_only_the_second_replacement_packet_to_fixed_groups():
     assert fourth["protocol"] == fifth["protocol"]
 
 
+def test_freeze_6_changes_no_frozen_group():
+    fifth, sixth = freeze.groups_for("freeze-5"), freeze.groups_for("freeze-6")
+    assert fifth == sixth and freeze.PREVIOUS["freeze-6"] == "freeze-5"
+
+
 def test_replacement_packet_keeps_the_items_and_changes_only_the_order(tmp_path, monkeypatch):
     items = [dict(uid=f"i00000000{n}", task="classify_reference", reference={"value": f"a/b@v{n}"}) for n in range(5)]
     template = packet.TEMPLATE.read_text(encoding="utf-8")

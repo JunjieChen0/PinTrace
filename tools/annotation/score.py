@@ -33,7 +33,11 @@ import freeze  # noqa: E402
 from make_packet import TASKS  # noqa: E402
 
 PRIVATE = ROOT / "reports/human_validation_v2/private"
-STAGE = "freeze-5"
+STAGE = "freeze-6"
+# The scored pair is fixed by the protocol log; any other pair is refused before an answer is read.
+FINAL_ANNOTATORS = ("A3", "A4")
+EXCLUDED = {"A1": "formal answers excluded (protocol log, 2026-11-08); replaced by A3",
+            "A2": "formal answers excluded (protocol log, 2026-11-09); replaced by A4"}
 CONFIDENCE = {"high", "medium", "low"}
 FAST_GAP_SECONDS = 2.0
 Z95 = 1.959963984540054
@@ -181,14 +185,17 @@ def write_csv(path: Path, rows: list[dict], fields: list[str]) -> None:
 
 
 def score(answers: dict, consensus: Path | None, stage: str = STAGE, private: Path = PRIVATE) -> dict:
-    """``answers`` maps exactly two annotator ids to their export files."""
+    """``answers`` maps the two final annotators, A3 and A4, to their export files."""
     if len(answers) != 2:
         raise ValueError("Exactly two annotators are scored")
+    excluded = [f"{name}: {EXCLUDED[name]}" for name in answers if name in EXCLUDED]
+    if excluded or set(answers) != set(FINAL_ANNOTATORS):
+        raise ValueError(f"Only {' and '.join(FINAL_ANNOTATORS)} are scored" + ("; " + "; ".join(excluded) if excluded else ""))
     problems = freeze.verify(stage)
     if problems:
         raise ValueError(f"{stage} check failed, no answer read: " + ", ".join(problems))
     key = json.loads((private / "key.json").read_text(encoding="utf-8"))
-    names = tuple(answers)
+    names = FINAL_ANNOTATORS
     first, second = (read_answers(answers[name], name, key) for name in names)
     out = private / "score"
     sheet = disagreements(key, first, second, names)
