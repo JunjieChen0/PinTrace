@@ -1,0 +1,13 @@
+pintrace/formal_acceptance.py
+pintrace/formal_activity.py
+pintrace/formal_common.py
+pintrace/formal_competing.py
+pintrace/formal_manuscript.py
+pintrace/formal_placebo.py
+pintrace/formal_robustness.py
+pintrace/formal_rq12.py
+pintrace/formal_sensitivity.py
+pintrace/formal_stats.py
+pintrace/tables.py
+pintrace/validity_golden.py
+pintrace/validity_reexport.py
