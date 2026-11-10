@@ -12,7 +12,8 @@
 
 | 代码标签 | Zenodo 版本 | 版本 DOI | 说明 |
 | --- | --- | --- | --- |
-| `v1.1.3` | 1.8.7 | [10.5281/zenodo.24103687](https://doi.org/10.5281/zenodo.24103687) | 补齐下游重算所需的两组输入（`maintenance-activity-v1/`、`v1-baseline/` 中两份文件），`reproduce.py` 的重算阶段不再缺输入；正文修正三处措辞；结果、代码与 `reproduce.py` 同 1.8.6 |
+| `v1.1.3` | 1.8.8 | [10.5281/zenodo.24108793](https://doi.org/10.5281/zenodo.24108793) | 归档与 placebo 记录的输入哈希一致的 `control_comparison.json`；`reproduce.py` 先重算对照比较再算 placebo，一个哈希可对应多份相同文件，CSV 逐格按浮点容差比较，图件按 SVG 去元数据、PNG 比像素，仍不同时只报告不判失败，依赖版本不符时警告；结果、代码与正文同 1.8.7 |
+| `v1.1.3` | 1.8.7 | [10.5281/zenodo.24103687](https://doi.org/10.5281/zenodo.24103687) | 补齐下游重算所需的两组输入（`maintenance-activity-v1/`、`v1-baseline/` 中两份文件），`reproduce.py` 的重算阶段不再缺输入；正文修正三处措辞；结果、代码与 `reproduce.py` 同 1.8.6（被 1.8.8 取代） |
 | `v1.1.3` | 1.8.6 | [10.5281/zenodo.24100102](https://doi.org/10.5281/zenodo.24100102) | 再投稿稿件定稿：正文删去延续口径率序列、多 seed 检验和共同面板 stock 三项补充分析（数值仍在 `reports/revision_checks.json`），图 2 恢复原版式；数据、结果、代码与 `reproduce.py` 同 1.8.5（被 1.8.7 取代） |
 | `v1.1.3` | 1.8.5 | [10.5281/zenodo.24098310](https://doi.org/10.5281/zenodo.24098310) | 修订稿再投稿版（JSEP major revision）：RQ1 的首个响应跳过新增的目标引用（entry），与正文定义一致；stock 排除日历非单调的仓库；补充共同面板、端点延续口径与多 seed 检验；`reproduce.py` 改为逐阶段判定并在失败时返回非零（被 1.8.6 取代） |
 | `v1.1.2` | 1.8.4 | [10.5281/zenodo.24095217](https://doi.org/10.5281/zenodo.24095217) | 在 1.8.3 的基础上为正文补充标注者伦理说明；数据、结果与代码不变（被 1.8.5 取代） |
