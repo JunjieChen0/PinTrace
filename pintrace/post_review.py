@@ -89,8 +89,13 @@ class Cluster:
 
 
 def stock_series(records, ids):
-    """Repository-equal and pooled share of other-Action references held as full SHAs, by 30-day offset."""
-    included = [r for r in records if r["repository_id"] in ids]
+    """Repository-equal and pooled share of other-Action references held as full SHAs, by 30-day offset.
+
+    Like the conversion series, the stock uses calendar offsets, so repositories with a non-monotone snapshot
+    calendar are excluded.
+    """
+    included = [r for r in records if r["repository_id"] in ids and r["clock_aligned"]]
+    unaligned = sum(1 for r in records if r["repository_id"] in ids and not r["clock_aligned"])
     per_repository = defaultdict(dict)
     for record in included:
         anchor = record["anchor"]
@@ -111,7 +116,7 @@ def stock_series(records, ids):
         pooled = cluster.interval(lambda r: float(r[0] / r[1]), counts) if counts else None
         rows.append(dict(offset_days=offset, repositories=len(available),
                          repository_equal=share, pooled=pooled))
-    return dict(bin_days=30, offsets=list(STOCK_OFFSETS), series=rows)
+    return dict(bin_days=30, offsets=list(STOCK_OFFSETS), excluded_clock_unaligned=unaligned, series=rows)
 
 
 def conversion_periods(records, ids):

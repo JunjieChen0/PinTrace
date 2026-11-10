@@ -5,7 +5,7 @@ All quantities are recomputed from the archived compact repository records (form
 coverage crawl; nothing is collected. Intervals resample whole repositories with the seed, replicate count and
 multinomial draw of the main batch (formal_extensions.Clustered).
 
-- Tail window: the 30-day series ends at day 540 (bins 0..17); the window ends nine days later. The tail
+- Tail window: the 30-day series ends at day 540 (bins 0..17); the window ends ten UTC days later. The tail
   [day 540, window end] is reported separately so that the bins are not read as covering it.
 - Repository share: the share of at-risk repositories with a conversion is pooled over repository-bins. Its
   numerator and denominator are reported, together with the distinct repositories behind them.
@@ -13,6 +13,13 @@ multinomial draw of the main batch (formal_extensions.Clustered).
   same exposure, so that bulk commits do not drive the ratio.
 - Endpoint and listing: the formal repositories listed on the dependents page against whether their last
   measured snapshot still references the Action.
+- Common panel: the pinned share at days 0, 180, 360 and 540 for the repositories that have a stock at all four,
+  so that a rise cannot come from a changing set of repositories.
+- Carry-forward exposure: the conversion series counts exposure only while a repository is observed to have
+  later commits. Holding each repository's last observed state to the window end (the clones postdate the window,
+  see denominator_audit) keeps the events and extends the exposure of quiet repositories.
+- Seed variation: the headline rate ratios with independent bootstrap seeds, to separate Monte Carlo variation
+  from the determinism shown by repeating one seed.
 
 Usage: python -m pintrace.revision_checks [--check]
 """
@@ -26,13 +33,16 @@ from pathlib import Path
 
 from . import coverage_audit as ca
 from . import formal_extensions as fx
+from . import post_review as pr
 from .formal_common import WORKING_MANIFEST, sha256, write_json
 
-RULE_VERSION = "revision-checks-v1"
+RULE_VERSION = "revision-checks-v2"
 OUTPUT = "reports/revision_checks.json"
 RECORDS = "data/derived/formal-stats-v3/results/rq12_repository_records.jsonl"
 WIDTH = fx.BIN_DAYS * fx.DAY
-WINDOWS = {"pre": (-6, 0), "m7_12": (6, 12), "m13_18": (12, 18)}  # in 30-day bins from the anchor
+WINDOWS = {"pre": (-6, 0), "m1": (0, 1), "m7_12": (6, 12), "m13_18": (12, 18)}  # in 30-day bins from the anchor
+PANEL_OFFSETS = (0, 180, 360, 540)
+EXTRA_SEEDS = (1, 2, 3, 4, 5)
 
 
 def window_counts(record, low, high):
@@ -86,7 +96,16 @@ def load_records(root):
     return [r for r in records if str(r["repository_id"]) in formal]
 
 
-def wave_checks(records):
+def rate(name, field):
+    return lambda s: s[f"{name}.{field}"] / s[f"{name}.exposure"]
+
+
+def ratio(a, b, field):
+    return lambda s: rate(a, field)(s) / rate(b, field)(s)
+
+
+def _clustered_windows(records):
+    """Per-window totals of the clock-aligned records and a resampler holding them as columns."""
     aligned = [r for r in records if r["clock_aligned"]]
     clustered = fx.Clustered([r["repository_id"] for r in aligned])
     counts = {}
@@ -99,8 +118,11 @@ def wave_checks(records):
                             last_conversion_utc=datetime.fromtimestamp(max(last), timezone.utc).isoformat() if last else None)
         for field in ("exposure", "conversions", "commits"):
             clustered.add(f"{name}.{field}", {i: v[field] for i, v in rows.items()})
-    rate = lambda name, field: lambda s: s[f"{name}.{field}"] / s[f"{name}.exposure"]
-    ratio = lambda a, b, field: lambda s: rate(a, field)(s) / rate(b, field)(s)
+    return aligned, clustered, counts
+
+
+def wave_checks(records):
+    aligned, clustered, counts = _clustered_windows(records)
     n = len(aligned)
     tail_start, tail_stop = bounds(aligned[0], "tail")
     return dict(
@@ -108,12 +130,67 @@ def wave_checks(records):
         windows=counts,
         tail=dict(start_utc=datetime.fromtimestamp(tail_start, timezone.utc).isoformat(),
                   end_utc=datetime.fromtimestamp(tail_stop - 1, timezone.utc).isoformat(),
+                  days=(tail_stop - tail_start) // fx.DAY,
                   rate_per_100=clustered.evaluate(lambda s: fx.PER * rate("tail", "conversions")(s), n),
                   rr_vs_pre=clustered.evaluate(ratio("tail", "pre", "conversions"), n)),
+        rr_m1_vs_pre=clustered.evaluate(ratio("m1", "pre", "conversions"), n),
         rr_m13_18_vs_pre=clustered.evaluate(ratio("m13_18", "pre", "conversions"), n),
         rr_m13_18_vs_m7_12=clustered.evaluate(ratio("m13_18", "m7_12", "conversions"), n),
         commit_rr_m13_18_vs_pre=clustered.evaluate(ratio("m13_18", "pre", "commits"), n),
         commit_rr_m13_18_vs_m7_12=clustered.evaluate(ratio("m13_18", "m7_12", "commits"), n))
+
+
+def carried_forward(record):
+    """The record with its last observed state held to the window end (a new dict; the input is unchanged)."""
+    return dict(record, observed_ancestry_covers_end=True)
+
+
+def carry_forward_waves(records):
+    """The wave checks with each repository's last observed state held to the window end."""
+    result = wave_checks([carried_forward(r) for r in records])
+    result.pop("tail")
+    return result
+
+
+def panel_stock(records):
+    """Repository-equal pinned share at fixed offsets for the aligned repositories with a stock at every offset."""
+    shares = {}
+    for record in records:
+        if not record["clock_aligned"]:
+            continue
+        row = {}
+        for offset in PANEL_OFFSETS:
+            state = pr._snapshot_at(record, record["anchor"] + offset * fx.DAY)
+            total, full = pr._other_counts(state) if state is not None else (0, 0)
+            if total:
+                row[offset] = full / total
+        if len(row) == len(PANEL_OFFSETS):
+            shares[str(record["repository_id"])] = row
+    clustered = fx.Clustered(shares)
+    clustered.add("n", {identity: 1.0 for identity in shares})
+    for offset in PANEL_OFFSETS:
+        clustered.add(f"share.{offset}", {identity: row[offset] for identity, row in shares.items()})
+    n = len(shares)
+    return dict(repositories=n, offsets=list(PANEL_OFFSETS),
+                repository_equal={str(offset): clustered.evaluate(lambda s, o=offset: s[f"share.{o}"] / s["n"], n)
+                                  for offset in PANEL_OFFSETS})
+
+
+def seed_variation(records):
+    """The first-month and months 13-18 rate ratios under independent bootstrap seeds."""
+    import numpy as np
+    aligned, clustered, _ = _clustered_windows(records)
+    n, k = len(aligned), len(clustered.ids)
+    output = {}
+    for seed in EXTRA_SEEDS:
+        clustered.matrix = np.random.default_rng(seed).multinomial(k, np.full(k, 1 / k), size=fx.REPLICATES)
+        clustered.cache = None
+        row = {}
+        for name, statistic in (("rr_m1_vs_pre", ratio("m1", "pre", "conversions")),
+                                ("rr_m13_18_vs_pre", ratio("m13_18", "pre", "conversions"))):
+            row[name] = dict(clustered.evaluate(statistic, n), seed=seed)
+        output[str(seed)] = row
+    return output
 
 
 def repository_months(records):
@@ -160,7 +237,8 @@ def endpoint_listing(root, records):
 def compute(root):
     records = load_records(root)
     return dict(waves=wave_checks(records), repository_months=repository_months(records),
-                endpoint_listing=endpoint_listing(root, records))
+                endpoint_listing=endpoint_listing(root, records), panel_stock=panel_stock(records),
+                carry_forward=carry_forward_waves(records), seed_variation=seed_variation(records))
 
 
 def inputs(root):

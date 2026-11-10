@@ -75,7 +75,8 @@ def sha_line(sha, index):
     sha = str(sha or "").lower()
     if sha == COMPROMISED:
         return "compromised_commit"
-    lines = {advisory_line(version_key(tag)) for tag in index.get(sha, ())}
+    # Only version tags place a commit on a line; a commit with no version tag is unclassified.
+    lines = {advisory_line(version) for version in map(version_key, index.get(sha, ())) if version is not None}
     if not lines:
         return "untagged_commit"
     return "patched_line_commit" if "patched_line" in lines else "earlier_line_commit"

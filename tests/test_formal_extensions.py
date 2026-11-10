@@ -59,6 +59,8 @@ def test_commits_are_classified_by_every_observed_tag():
     assert sha_line(COMPROMISED, INDEX) == "compromised_commit"
     assert sha_line(NEW, INDEX) == "patched_line_commit" and sha_line(OLD, INDEX) == "earlier_line_commit"
     assert sha_line("c" * 40, INDEX) == "untagged_commit"
+    assert sha_line("d" * 40, {"d" * 40: {"latest", "main"}}) == "untagged_commit"
+    assert sha_line("e" * 40, {"e" * 40: {"latest", "v46.0.2"}}) == "patched_line_commit"
     assert sha_line(NEW.upper(), INDEX) == "patched_line_commit"
     assert ref_line(ref("t", "v46", "mutable_or_unresolved"), INDEX) == "patched_line"
     assert ref_line(ref("t", OLD, "full_sha"), INDEX) == "earlier_line_commit"

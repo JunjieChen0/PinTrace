@@ -14,9 +14,9 @@ def snapshot(day, refs=4, full=1, target=0, complete=True):
                 full_sha_references=full, target_references=target, target_full_sha=0, sha=f"c{day}")
 
 
-def record(rid, snapshots, covers_end=True):
+def record(rid, snapshots, covers_end=True, aligned=True):
     return dict(repository_id=rid, anchor=ANCHOR, window_end=END, observed_ancestry_covers_end=covers_end,
-                endpoint_index=len(snapshots) - 1, snapshots=snapshots)
+                endpoint_index=len(snapshots) - 1, snapshots=snapshots, clock_aligned=aligned)
 
 
 ACTIVE = record("1", [snapshot(-10), snapshot(540)])
@@ -31,6 +31,14 @@ def test_stock_status_names_each_reason():
     assert da.stock_status(QUIET, 90) == "counted"
     assert da.stock_status(EMPTY, 0) == "no_other_action_references"
     assert da.stock_status(PARTIAL, 0) == "no_complete_snapshot"
+
+
+def test_unaligned_calendar_is_excluded_from_the_stock():
+    unaligned = record("5", [snapshot(-10), snapshot(540)], aligned=False)
+    assert da.stock_status(unaligned, 540) == "excluded_clock_unaligned"
+    series = da.pr.stock_series([ACTIVE, unaligned], {"1", "5"})
+    assert series["excluded_clock_unaligned"] == 1
+    assert next(row for row in series["series"] if row["offset_days"] == 540)["repositories"] == 1
 
 
 def test_attrition_counts_only_the_formal_ids():

@@ -31,6 +31,8 @@ CROSS_TABS = ("entry_configuration_coverage", "entry_comment_kind", "entry_comme
 def stock_status(record, offset):
     """Why a repository does or does not enter the stock at ``offset`` days after the anchor."""
     when = record["anchor"] + offset * DAY
+    if not record["clock_aligned"]:
+        return "excluded_clock_unaligned"
     if when > pr._observed_end(record):
         return "no_default_branch_commit_after_last_observed"
     state = pr._snapshot_at(record, when)

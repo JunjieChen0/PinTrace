@@ -33,6 +33,7 @@ HORIZONS = (7, 30, 90, 180, 365)
 FIRST_STATES = ("pin", "tag_update", "remove", "replace", "unpin", "sha_target_change",
                 "target_reference_entry", "multiple_behaviors", "unknown_boundary",
                 "ambiguous_boundary", "no_observed_change", "excluded_eventday", "before_landmark", "clock_unknown")
+ENTRY = {"target_reference_entry"}
 TERMINALS = {"pin", "remove", "replace", "unknown_boundary", "ambiguous_transition"}
 BOUNDARIES = {"unknown_boundary", "ambiguous_transition"}
 REF_FIELDS = ("action", "kind", "repository", "ref", "ref_type", "lineage_id", "lineage_status", "path", "job", "step_id", "step_index", "line",
@@ -249,7 +250,10 @@ def describe_repository(record, settings=None):
             if state["complete"] is not True and (not record["clock_aligned"] or state["timestamp"] <= end):
                 by_point[point].add("unknown_boundary")
     nonempty = [(point, kinds) for point, kinds in sorted(by_point.items()) if kinds]
-    first = nonempty[0] if nonempty else None
+    # A target reference that first appears after the baseline (new, copied or reintroduced) is an entry, not a
+    # response to the baseline reference: the first-response search skips it, the full-window behaviors keep it.
+    responses = [(point, kinds - ENTRY) for point, kinds in nonempty if kinds - ENTRY]
+    first = responses[0] if responses else None
     kinds = first[1] if first else set()
     category = ("unknown_boundary" if "unknown_boundary" in kinds else "ambiguous_boundary" if "ambiguous_boundary" in kinds
                 else next(iter(kinds)) if len(kinds) == 1 else "multiple_behaviors" if kinds else "no_observed_change")
@@ -552,7 +556,8 @@ def run(root, output_dir, context):
     finally:
         csv.field_size_limit(old_limit)
     contamination = sum((record["repository_id"], row.get("lineage_id")) in excluded or any((record["repository_id"], lid) in excluded for lid in row.get("lineage_ids", [])) for record in records if record["repository_id"] in context["formal_ids"] for key in ("references", "new_actions") for row in describe_repository(record)[key])
-    outputs = {path.name: dict(path=str(path), sha256=sha256(path)) for path in sorted(output_dir.glob("rq*.csv"))}
+    written = ("rq1_repository_results.csv", "rq2_existing_reference_results.csv", "rq2_new_action_results.csv")
+    outputs = {name: dict(path=str(output_dir / name), sha256=sha256(output_dir / name)) for name in written}
     outputs[cache_path.name] = dict(path=str(cache_path), sha256=sha256(cache_path))
     outputs[receipt_path.name] = dict(path=str(receipt_path), sha256=sha256(receipt_path))
     result = {}

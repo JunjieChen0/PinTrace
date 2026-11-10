@@ -103,6 +103,26 @@ def test_rq1_does_not_drop_already_fixed_reference_changes(before, after, kind):
     assert describe_repository(r)["rq1"]["first_response_state"] == kind
 
 
+def test_entry_of_a_new_target_reference_is_not_the_first_response():
+    base = ref(identifier="old")
+    r = record(state(-2, [base]), state(1, [base, ref(identifier="new")]),
+               state(5, [ref(version="v2", identifier="old"), ref(identifier="new")]))
+    output = describe_repository(r)["rq1"]
+    assert output["first_response_state"] == "tag_update"
+    assert output["response_time_days"] == 5
+    assert "target_reference_entry" in output["full_window_behaviors"]
+    assert summaries([r])["rq1"]["first_response_counts"]["target_reference_entry"] == 0
+
+
+def test_entry_alone_leaves_the_repository_without_a_response():
+    base = ref(identifier="old")
+    r = record(state(-2, [base]), state(1, [base, ref(identifier="new")]))
+    output = describe_repository(r)["rq1"]
+    assert output["first_response_state"] == "no_observed_change"
+    assert output["response_time_days"] is None
+    assert output["full_window_behaviors"] == ["target_reference_entry"]
+
+
 def test_existing_fixed_baseline_denominator_competitions_and_weights():
     a = ref("actions/a", identifier="a")
     b = ref("actions/b", identifier="b")
