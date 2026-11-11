@@ -235,24 +235,43 @@ def _terminal_status(kind, event, record, anchor, start, end, observed_end, sett
     return kind, time
 
 
+def _baseline_target_lineages(record, baseline):
+    if baseline["index"] is None:
+        return set()
+    measurement = record.get("target_measurement")
+    if measurement is None:
+        if any(_target_behaviors(event, record["target_action"]) for event in record["events"]):
+            raise ValueError("Target events without the target references needed to identify baseline lineages")
+        return set()
+    commit = record["snapshots"][baseline["index"]]["sha"]
+    return {ref.get("lineage_id") for ref in measurement["lineages"]["references"]
+            if ref.get("snapshot_sha") == commit and ref.get("lineage_id")}
+
+
 def describe_repository(record, settings=None):
     """Return sufficient row records for the requested calendar/landmark scope."""
     settings = settings or {}
     baseline, events, anchor, start, end, observed_end = _selected(record, settings)
     target, snapshots = record["target_action"], record["snapshots"]
     selected = [event for event in events if not record["clock_aligned"] or event["timestamp"] <= end]
-    by_point = defaultdict(set)
+    # The first response is a change to a target reference that existed at baseline: an event counts only when
+    # its before side holds a target reference of a baseline lineage. Entries, and later changes to references
+    # that entered after the baseline (including another Action replaced by the target), stay full-window behaviors.
+    lineages = _baseline_target_lineages(record, baseline)
+    by_point, response_points = defaultdict(set), defaultdict(set)
     for event in selected:
-        by_point[event["index"]].update(_target_behaviors(event, target))
+        behaviors = _target_behaviors(event, target)
+        by_point[event["index"]].update(behaviors)
+        if any(ref.get("action") == target and ref.get("lineage_id") in lineages for ref in _refs(event.get("before"))):
+            response_points[event["index"]].update(behaviors - ENTRY)
     if baseline["index"] is not None:
         for point in range(baseline["index"] + 1, record["endpoint_index"] + 1):
             state = snapshots[point]
             if state["complete"] is not True and (not record["clock_aligned"] or state["timestamp"] <= end):
                 by_point[point].add("unknown_boundary")
+                response_points[point].add("unknown_boundary")
     nonempty = [(point, kinds) for point, kinds in sorted(by_point.items()) if kinds]
-    # A target reference that first appears after the baseline (new, copied or reintroduced) is an entry, not a
-    # response to the baseline reference: the first-response search skips it, the full-window behaviors keep it.
-    responses = [(point, kinds - ENTRY) for point, kinds in nonempty if kinds - ENTRY]
+    responses = [(point, kinds) for point, kinds in sorted(response_points.items()) if kinds]
     first = responses[0] if responses else None
     kinds = first[1] if first else set()
     category = ("unknown_boundary" if "unknown_boundary" in kinds else "ambiguous_boundary" if "ambiguous_boundary" in kinds
@@ -281,6 +300,7 @@ def describe_repository(record, settings=None):
                observed_end=observed_end, analysis_start=start, analysis_end=end, anchor=anchor,
                clock_aligned=record["clock_aligned"], first_known_response=known_first)
     rq1["baseline_unknown_at_entry"] = not baseline["complete"]
+    rq1["target_references_after_first"] = snapshots[first[0]]["target_references"] if first else None
     reference_rows = []
     exits = defaultdict(list)
     for event in selected:
@@ -422,6 +442,11 @@ def summarize(records, ids, settings=None, context=None, population="formal"):
     rq1 = dict(repositories=len(ids), first_response_counts=first_counts, first_response_proportions={}, full_window_combination_counts=dict(sorted(combinations.items())),
                full_window_behavior_repository_counts=dict(sorted(Counter(kind for row in rq1_rows for kind in set(row["full_window_behaviors"])).items())), horizons={},
                metric_prefix=prefix1, target_state_horizons={}, settings={k: sorted(v) if isinstance(v, set) else v for k, v in settings.items()})
+    # A removal event removes at least one target reference; report how many first-response removals left none.
+    rq1["first_response_target_references_left"] = {
+        kind: dict(none=sum(row["first_response_state"] == kind and row["target_references_after_first"] == 0 for row in rq1_rows),
+                   some=sum(row["first_response_state"] == kind and (row["target_references_after_first"] or 0) > 0 for row in rq1_rows))
+        for kind in ("remove", "replace")}
     for kind in first_counts:
         rq1["first_response_proportions"][kind] = _ratio(context, prefix1 + ".first_response." + kind, [(row["repository_id"], int(row["first_response_state"] == kind), 1) for row in rq1_rows], population)
     rq1["full_window_combination_proportions"] = {kind: _ratio(context, prefix1 + ".combination." + kind, [(row["repository_id"], int(row["full_window_combination"] == kind), 1) for row in rq1_rows], population) for kind in sorted(combinations)}

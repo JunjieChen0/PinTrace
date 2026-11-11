@@ -123,6 +123,53 @@ def test_entry_alone_leaves_the_repository_without_a_response():
     assert output["full_window_behaviors"] == ["target_reference_entry"]
 
 
+def test_removal_of_a_post_baseline_reference_is_not_the_first_response():
+    base = ref(identifier="old")
+    r = record(state(-2, [base]), state(1, [base, ref(identifier="new")]), state(3, [base]),
+               state(5, [ref(version="v2", identifier="old")]))
+    output = describe_repository(r)["rq1"]
+    assert output["first_response_state"] == "tag_update"
+    assert output["response_time_days"] == 5
+    assert "remove" in output["full_window_behaviors"]
+
+
+def test_replacing_another_action_by_the_target_is_not_the_first_response():
+    base = ref(identifier="old")
+    r = record(state(-2, [base, ref("actions/x", identifier="x")]), state(1, [base, ref(identifier="x")]))
+    output = describe_repository(r)["rq1"]
+    assert output["first_response_state"] == "no_observed_change"
+    assert "replace" in output["full_window_behaviors"]
+
+
+def test_a_commit_that_updates_the_baseline_reference_and_adds_one_is_a_response():
+    base = ref(identifier="old")
+    r = record(state(-2, [base]), state(2, [ref(version="v2", identifier="old"), ref(identifier="new")]))
+    output = describe_repository(r)["rq1"]
+    assert output["first_response_state"] == "tag_update"
+    assert output["response_time_days"] == 2
+
+
+def test_an_ambiguous_rewrite_of_post_baseline_references_only_is_not_the_first_response():
+    base = ref(identifier="old")
+    extra = [ref(identifier=None, version="v3"), ref(identifier=None, version="v3")]
+    r = record(state(-2, [base]), state(1, [base] + extra),
+               state(2, [base, ref(identifier=None, version=SHA), ref(identifier=None, version=SHA)]),
+               state(6, [ref(version=SHA, identifier="old")] + [ref(identifier=None, version=SHA)] * 2))
+    output = describe_repository(r)["rq1"]
+    assert output["first_response_state"] == "pin"
+    assert output["response_time_days"] == 6
+
+
+def test_target_references_remaining_after_the_first_response_are_reported():
+    both = [ref(identifier="one"), ref(identifier="two")]
+    partial = record(state(-2, both), state(1, [ref(identifier="two")]))
+    full = record(state(-2, both), state(1, []), identity="2")
+    assert describe_repository(partial)["rq1"]["target_references_after_first"] == 1
+    assert describe_repository(full)["rq1"]["target_references_after_first"] == 0
+    left = summaries([partial, full])["rq1"]["first_response_target_references_left"]["remove"]
+    assert left == dict(none=1, some=1)
+
+
 def test_existing_fixed_baseline_denominator_competitions_and_weights():
     a = ref("actions/a", identifier="a")
     b = ref("actions/b", identifier="b")
